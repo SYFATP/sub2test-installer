@@ -321,7 +321,7 @@ if deploy_mode == 'compose' and compose_file.exists():
         return default
 
     def find_service_value(service_name, key, default=''):
-        pattern = rf'{service_name}:.*?^\\s+environment:\n(?P<body>(?:^\\s+.+\n)+)'
+        pattern = rf'{service_name}:.*?^\\s+environment:\\n(?P<body>(?:^\\s+.+\\n)+)'
         match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
         if not match:
             return default
@@ -587,7 +587,7 @@ for row in rows:
             raise RuntimeError(f'unsupported platform: {platform}')
 
         ok = 200 <= response.status_code < 300
-        body = response.text.strip().replace('\n', ' ')
+        body = response.text.strip().replace('\\n', ' ')
         detail = body[:300] if body else response.reason
         if not ok:
             detail = f'http {response.status_code}: {detail}'
