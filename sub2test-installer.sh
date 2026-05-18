@@ -310,11 +310,9 @@ if deploy_mode == 'compose' and compose_file.exists():
     dotenv = load_dotenv(compose_file.parent / '.env')
 
     def find_env_value(name, default=''):
-        patterns = [
-            rf'^\\s*-\\s*{name}=(.+)$',
-            rf'^\\s+{name}:\\s*["\\']?([^"\\'\\n]+)["\\']?\\s*$',
-        ]
-        for pattern in patterns:
+        list_pattern = rf'^\\s*-\\s*{name}=(.+)$'
+        map_pattern = '^\\s+' + re.escape(name) + ':\\s*["\']?([^"\'\\n]+)["\']?\\s*$'
+        for pattern in (list_pattern, map_pattern):
             match = re.search(pattern, text, re.MULTILINE)
             if match:
                 return resolve_value(match.group(1).strip(), dotenv, default)
