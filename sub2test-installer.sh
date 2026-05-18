@@ -310,12 +310,15 @@ if deploy_mode == 'compose' and compose_file.exists():
     dotenv = load_dotenv(compose_file.parent / '.env')
 
     def find_env_value(name, default=''):
-        list_pattern = rf'^\\s*-\\s*{name}=(.+)$'
-        map_pattern = '^\\s+' + re.escape(name) + ':\\s*["\']?([^"\'\\n]+)["\']?\\s*$'
-        for pattern in (list_pattern, map_pattern):
-            match = re.search(pattern, text, re.MULTILINE)
-            if match:
-                return resolve_value(match.group(1).strip(), dotenv, default)
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(f'- {name}='):
+                return resolve_value(line.split('=', 1)[1].strip(), dotenv, default)
+            if line.startswith(f'{name}:'):
+                value = line.split(':', 1)[1].strip().strip('"').strip("'")
+                return resolve_value(value, dotenv, default)
         return default
 
     def find_service_value(service_name, key, default=''):
