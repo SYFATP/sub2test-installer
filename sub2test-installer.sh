@@ -461,14 +461,14 @@ PY_PREFLIGHT_RUNTIME
 run_health_check() {
   preflight_runtime
   if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
-    local accounts_tsv
-    accounts_tsv="$(mktemp)"
-    trap 'rm -f "$accounts_tsv"' RETURN
+    local accounts_json
+    accounts_json="$(mktemp)"
+    trap 'rm -f "$accounts_json"' RETURN
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -AtF $'\t' -c "SELECT id, COALESCE(name, ''), platform, type, status, COALESCE(error_message, ''), credentials::text, extra::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_tsv"
-    python3 - "$accounts_tsv" <<'PY_RUN_HEALTH_CHECK'
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -At -c "SELECT json_build_object('id', id, 'name', COALESCE(name, ''), 'platform', platform, 'type', type, 'status', status, 'error_message', COALESCE(error_message, ''), 'credentials', credentials, 'extra', extra)::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_json"
+    python3 - "$accounts_json" <<'PY_RUN_HEALTH_CHECK'
 import json
 import os
 import random
@@ -480,13 +480,24 @@ import requests
 def get_env(name: str, default: str = '') -> str:
     return (os.getenv(name, default) or '').strip()
 
+def summarize_credentials(credentials: dict) -> str:
+    if not isinstance(credentials, dict):
+        return 'credentials=none'
+    if credentials.get('email'):
+        return f"email={credentials['email']}"
+    if credentials.get('organization_id'):
+        return f"organization_id={credentials['organization_id']}"
+    if credentials.get('chatgpt_account_id'):
+        return f"chatgpt_account_id={credentials['chatgpt_account_id']}"
+    return 'credentials=present'
+
 sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
 sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
 timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
 concurrency = int(get_env('SUB2TEST_CONCURRENCY', '3') or '3')
 rows_file = sys.argv[1]
 with open(rows_file, 'r', encoding='utf-8') as fh:
-    rows = [line.rstrip('\n').split('\t') for line in fh if line.strip()]
+    rows = [json.loads(line) for line in fh if line.strip()]
 print(f'loaded {len(rows)} active accounts (configured concurrency={concurrency})')
 if not rows:
     sys.exit(0)
@@ -520,9 +531,12 @@ def choose_model(platform: str, account_type: str, credentials: dict, extra: dic
     return 'claude-sonnet-4-5-20250929'
 
 for row in rows:
-    account_id, name, platform, account_type, status, error_message, credentials_raw, extra_raw = (row + [''] * 8)[:8]
-    credentials = as_dict(credentials_raw)
-    extra = as_dict(extra_raw)
+    account_id = row.get('id', '')
+    name = row.get('name', '')
+    platform = row.get('platform', '')
+    account_type = row.get('type', '')
+    credentials = as_dict(row.get('credentials'))
+    extra = as_dict(row.get('extra'))
     model = choose_model(platform, account_type, credentials, extra)
     started = time.time()
     ok = False
@@ -583,7 +597,8 @@ for row in rows:
     latency_ms = int((time.time() - started) * 1000)
     result = 'success' if ok else 'failed'
     display_name = (name or '').strip() or f'account-{account_id}'
-    print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} model={model} latency_ms={latency_ms} detail={detail}')
+    summary = summarize_credentials(credentials)
+    print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} model={model} latency_ms={latency_ms} {summary} detail={detail}')
 
     if sleep_max <= sleep_min:
         time.sleep(max(sleep_min, 0))
