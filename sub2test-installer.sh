@@ -468,13 +468,17 @@ run_health_check() {
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -At -c "SELECT json_build_object('id', id, 'name', COALESCE(name, ''), 'platform', platform, 'type', type, 'status', status, 'error_message', COALESCE(error_message, ''), 'credentials', credentials, 'extra', extra)::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_json"
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -At -c "SELECT json_build_object('id', id, 'name', COALESCE(name, ''), 'platform', platform, 'type', type, 'status', status, 'error_message', COALESCE(error_message, ''), 'rate_limited_at', rate_limited_at, 'rate_limit_reset_at', rate_limit_reset_at, 'overload_until', overload_until, 'temp_unschedulable_until', temp_unschedulable_until, 'temp_unschedulable_reason', COALESCE(temp_unschedulable_reason, ''), 'credentials', credentials, 'extra', extra)::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_json"
     python3 - "$accounts_json" <<'PY_RUN_HEALTH_CHECK'
 import json
 import os
 import random
+import re
+import signal
+import subprocess
 import sys
 import time
+from collections import Counter
 
 import requests
 
@@ -492,6 +496,11 @@ def summarize_credentials(credentials: dict) -> str:
         return f"chatgpt_account_id={credentials['chatgpt_account_id']}"
     return 'credentials=present'
 
+def shorten_detail(detail: str) -> str:
+    detail = (detail or '').strip().replace('\\n', ' ')
+    detail = ' '.join(detail.split())
+    return detail[:180]
+
 sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
 sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
 timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
@@ -505,6 +514,16 @@ if not rows:
 
 session = requests.Session()
 headers = {'Accept': 'text/event-stream'}
+counts = Counter()
+status_counts = Counter()
+pipe_closed = False
+
+
+def handle_sigpipe(signum, frame):
+    raise BrokenPipeError()
+
+
+signal.signal(signal.SIGPIPE, handle_sigpipe)
 
 def as_dict(value):
     if isinstance(value, dict):
@@ -531,6 +550,120 @@ def choose_model(platform: str, account_type: str, credentials: dict, extra: dic
         return 'gemini-2.0-flash'
     return 'claude-sonnet-4-5-20250929'
 
+
+def shell_quote(value: str) -> str:
+    return "'" + (value or '').replace("'", "'\"'\"'") + "'"
+
+
+def run_psql_update(sql: str) -> bool:
+    if not sql.strip():
+        return False
+    try:
+        subprocess.run([
+            'docker', 'exec', '-e', f'PGPASSWORD={get_env("SUB2TEST_DB_PASSWORD")}', get_env('SUB2TEST_DB_CONTAINER'),
+            'psql', '-U', get_env('SUB2TEST_DB_USER'), '-d', get_env('SUB2TEST_DB_NAME'), '-c', sql,
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
+def parse_rate_limit_reset(response, detail_text: str) -> int | None:
+    candidates = []
+    for key in ('x-ratelimit-reset', 'x-ratelimit-reset-requests', 'retry-after'):
+        value = (response.headers.get(key) or '').strip()
+        if value:
+            candidates.append(value)
+    text = detail_text or ''
+    for pattern in (
+        r'"reset[_ ]?at"\s*:\s*(\d+)',
+        r'"reset[_ ]?time"\s*:\s*(\d+)',
+        r'"retry[_ -]?after"\s*:\s*(\d+)',
+        r'"resets_at"\s*:\s*"(\d+)"',
+    ):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidates.append(match.group(1))
+    now = int(time.time())
+    for raw in candidates:
+        try:
+            value = int(float(raw))
+        except Exception:
+            continue
+        if value > now + 315360000:
+            value = value // 1000
+        if value > now + 60:
+            return value
+        if 0 < value <= 86400:
+            return now + value
+    return None
+
+
+def build_writeback_sql(row: dict, native_status: str, detail_text: str, response=None) -> tuple[str, str]:
+    account_id = int(row.get('id') or 0)
+    current_status = (row.get('status') or '').strip()
+    extra = as_dict(row.get('extra'))
+    has_runtime_state = any([
+        row.get('rate_limited_at'),
+        row.get('rate_limit_reset_at'),
+        row.get('overload_until'),
+        row.get('temp_unschedulable_until'),
+        (row.get('temp_unschedulable_reason') or '').strip(),
+        bool(extra.get('model_rate_limits')),
+        bool(extra.get('antigravity_quota_scopes')),
+    ])
+
+    if account_id <= 0:
+        return '', 'skipped'
+
+    if native_status == 'error':
+        sql = (
+            'UPDATE accounts '
+            f"SET status = 'error', error_message = {shell_quote(detail_text)}, updated_at = NOW() "
+            f'WHERE id = {account_id} AND deleted_at IS NULL;'
+        )
+        return sql, 'applied'
+
+    if native_status == 'rate_limited':
+        reset_at = parse_rate_limit_reset(response, detail_text) if response is not None else None
+        if reset_at is None:
+            return '', 'skipped'
+        assignments = [
+            'rate_limited_at = NOW()',
+            f"rate_limit_reset_at = to_timestamp({reset_at})",
+            'updated_at = NOW()',
+        ]
+        if current_status == 'error':
+            assignments.insert(0, "status = 'active'")
+            assignments.insert(1, "error_message = ''")
+        sql = (
+            'UPDATE accounts SET ' + ', '.join(assignments) +
+            f' WHERE id = {account_id} AND deleted_at IS NULL;'
+        )
+        return sql, 'applied'
+
+    if native_status == 'success':
+        if current_status != 'error' and not has_runtime_state:
+            return '', 'skipped'
+        assignments = [
+            "status = 'active'",
+            "error_message = ''",
+            'rate_limited_at = NULL',
+            'rate_limit_reset_at = NULL',
+            'overload_until = NULL',
+            'temp_unschedulable_until = NULL',
+            "temp_unschedulable_reason = ''",
+            "extra = COALESCE(extra, '{}'::jsonb) - 'model_rate_limits' - 'antigravity_quota_scopes'",
+            'updated_at = NOW()',
+        ]
+        sql = (
+            'UPDATE accounts SET ' + ', '.join(assignments) +
+            f' WHERE id = {account_id} AND deleted_at IS NULL;'
+        )
+        return sql, 'applied'
+
+    return '', 'skipped'
+
 for row in rows:
     account_id = row.get('id', '')
     name = row.get('name', '')
@@ -542,8 +675,10 @@ for row in rows:
     started = time.time()
     ok = False
     detail = ''
+    status_code = None
 
     try:
+        response = None
         platform_key = (platform or '').lower()
         type_key = (account_type or '').lower()
 
@@ -587,24 +722,56 @@ for row in rows:
         else:
             raise RuntimeError(f'unsupported platform: {platform}')
 
+        status_code = response.status_code
         ok = 200 <= response.status_code < 300
-        body = response.text.strip().replace('\\n', ' ')
-        detail = body[:300] if body else response.reason
+        body = shorten_detail(response.text)
+        detail = body or response.reason or 'empty response'
         if not ok:
-            detail = f'http {response.status_code}: {detail}'
+            if response.status_code == 401:
+                detail = f'Authentication failed (401): {detail}'
+            else:
+                detail = f'API returned {response.status_code}: {detail}'
     except Exception as exc:
-        detail = str(exc)
+        detail = shorten_detail(str(exc))
+        response = None
+
+    counts['success' if ok else 'failed'] += 1
 
     latency_ms = int((time.time() - started) * 1000)
     result = 'success' if ok else 'failed'
+    if ok:
+        native_status = 'success'
+    elif status_code == 401:
+        native_status = 'error'
+    elif status_code == 429:
+        native_status = 'rate_limited'
+    else:
+        native_status = 'failed'
+    status_counts[native_status] += 1
+    writeback_sql, writeback_state = build_writeback_sql(row, native_status, detail, response)
+    if writeback_sql:
+        writeback_state = 'applied' if run_psql_update(writeback_sql) else 'failed'
     display_name = (name or '').strip() or f'account-{account_id}'
     summary = summarize_credentials(credentials)
-    print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} model={model} latency_ms={latency_ms} {summary} detail={detail}')
+    try:
+        print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} model={model} latency_ms={latency_ms} status={native_status} writeback={writeback_state} {summary} detail={detail}')
+    except BrokenPipeError:
+        pipe_closed = True
+        break
 
     if sleep_max <= sleep_min:
         time.sleep(max(sleep_min, 0))
     else:
         time.sleep(random.randint(max(sleep_min, 0), max(sleep_max, sleep_min)))
+
+if not pipe_closed:
+    try:
+        print(f"summary success={counts['success']} failed={counts['failed']}")
+        for key in ('success', 'error', 'rate_limited', 'failed'):
+            if status_counts[key] > 0:
+                print(f'summary status_{key}={status_counts[key]}')
+    except BrokenPipeError:
+        pass
 PY_RUN_HEALTH_CHECK
     return 0
   fi
