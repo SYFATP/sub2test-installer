@@ -141,7 +141,7 @@ config_file = sys.argv[2]
 compose_file = sys.argv[3]
 app_config_file = sys.argv[4]
 
-content = '''#!/bin/bash
+content = r'''#!/bin/bash
 set -euo pipefail
 
 CONFIG_FILE="${SUB2TEST_CONFIG_FILE:-__CONFIG_FILE__}"
