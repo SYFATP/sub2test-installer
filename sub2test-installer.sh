@@ -621,7 +621,8 @@ content = '''#!/bin/bash
 set -euo pipefail
 
 export SUB2TEST_CONFIG_FILE="${SUB2TEST_CONFIG_FILE:-__CONFIG_FILE__}"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s\n' "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"
 [ -f "$SUB2TEST_CONFIG_FILE" ] && . "$SUB2TEST_CONFIG_FILE"
 
