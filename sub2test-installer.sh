@@ -122,6 +122,7 @@ SUB2TEST_DB_USER=
 SUB2TEST_DB_PASSWORD=
 SUB2TEST_DB_NAME=
 SUB2TEST_DB_SSLMODE=disable
+SUB2TEST_DB_CONTAINER=
 SUB2TEST_ENABLED=false
 SUB2TEST_SCHEDULE=daily
 SUB2TEST_CONCURRENCY=3
@@ -212,6 +213,10 @@ EOF_TIMER
 }
 
 preflight_config_source() {
+  if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    return 0
+  fi
+
   if [ -n "${SUB2TEST_DB_HOST:-}" ] && [ -n "${SUB2TEST_DB_USER:-}" ] && [ -n "${SUB2TEST_DB_NAME:-}" ]; then
     return 0
   fi
@@ -240,13 +245,14 @@ import re
 import sys
 from pathlib import Path
 
-def output(host, port, user, password, dbname, sslmode):
+def output(host, port, user, password, dbname, sslmode, container=''):
     print(f"SUB2TEST_DB_HOST={host}")
     print(f"SUB2TEST_DB_PORT={port}")
     print(f"SUB2TEST_DB_USER={user}")
     print(f"SUB2TEST_DB_PASSWORD={password}")
     print(f"SUB2TEST_DB_NAME={dbname}")
     print(f"SUB2TEST_DB_SSLMODE={sslmode}")
+    print(f"SUB2TEST_DB_CONTAINER={container}")
 
 def load_dotenv(env_path: Path):
     values = {}
@@ -287,8 +293,12 @@ user = os.getenv('SUB2TEST_DB_USER', '').strip()
 password = os.getenv('SUB2TEST_DB_PASSWORD', '').strip()
 dbname = os.getenv('SUB2TEST_DB_NAME', '').strip()
 sslmode = os.getenv('SUB2TEST_DB_SSLMODE', 'disable').strip() or 'disable'
+container = os.getenv('SUB2TEST_DB_CONTAINER', '').strip()
+if container:
+    output(host or '127.0.0.1', port or '5432', user, password, dbname, sslmode, container)
+    sys.exit(0)
 if host and user and dbname:
-    output(host, port or '5432', user, password, dbname, sslmode)
+    output(host, port or '5432', user, password, dbname, sslmode, container)
     sys.exit(0)
 
 deploy_mode = os.getenv('SUB2TEST_DEPLOY_MODE', 'compose').strip().lower()
@@ -310,13 +320,36 @@ if deploy_mode == 'compose' and compose_file.exists():
                 return resolve_value(match.group(1).strip(), dotenv, default)
         return default
 
-    host = find_env_value('DATABASE_HOST', 'postgres')
+    def find_service_value(service_name, key, default=''):
+        pattern = rf'{service_name}:.*?^\\s+environment:\n(?P<body>(?:^\\s+.+\n)+)'
+        match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+        if not match:
+            return default
+        body = match.group('body')
+        inline_match = re.search(rf'^\\s+{key}:\\s*(.+)$', body, re.MULTILINE)
+        if inline_match:
+            return resolve_value(inline_match.group(1).strip(), dotenv, default)
+        return default
+
+    container_match = re.search(r'^\\s*container_name:\\s*([^\\s#]+)\\s*$', text, re.MULTILINE)
+    container_name = container_match.group(1).strip() if container_match else ''
+    host = find_env_value('DATABASE_HOST', '')
     port = find_env_value('DATABASE_PORT', '5432')
     user = find_env_value('DATABASE_USER', '')
     password = find_env_value('DATABASE_PASSWORD', '')
     dbname = find_env_value('DATABASE_DBNAME', '')
     sslmode = find_env_value('DATABASE_SSLMODE', 'disable') or 'disable'
-    output(host, port, user, password, dbname, sslmode)
+
+    if not user:
+        user = find_service_value('sub2api-db', 'POSTGRES_USER', '') or find_env_value('POSTGRES_USER', '')
+    if not password:
+        password = find_service_value('sub2api-db', 'POSTGRES_PASSWORD', '') or find_env_value('POSTGRES_PASSWORD', '')
+    if not dbname:
+        dbname = find_service_value('sub2api-db', 'POSTGRES_DB', '') or find_env_value('POSTGRES_DB', '')
+    if not host:
+        host = '127.0.0.1' if container_name else 'postgres'
+
+    output(host, port, user, password, dbname, sslmode, container_name)
     sys.exit(0)
 
 if app_config.exists():
@@ -348,7 +381,38 @@ preflight_runtime() {
   require_python_module requests python3-requests
   preflight_config_source
   eval "$(resolve_db_config)"
-  export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE
+  export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
+  if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    docker exec "$SUB2TEST_DB_CONTAINER" sh -lc 'command -v psql >/dev/null 2>&1' || {
+      echo "psql is required inside DB container: $SUB2TEST_DB_CONTAINER" >&2
+      exit 1
+    }
+    docker exec \
+      -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
+      "$SUB2TEST_DB_CONTAINER" \
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -Atqc 'SELECT 1' >/dev/null || {
+      echo "database preflight failed via container: $SUB2TEST_DB_CONTAINER" >&2
+      exit 1
+    }
+    docker exec \
+      -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
+      "$SUB2TEST_DB_CONTAINER" \
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -Atqc "SELECT to_regclass('public.accounts')" | grep -qx 'accounts' || {
+      echo "accounts table not found" >&2
+      exit 1
+    }
+    local columns
+    columns="$(docker exec \
+      -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
+      "$SUB2TEST_DB_CONTAINER" \
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -Atqc "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'accounts'")"
+    printf '%s\n' "$columns" | grep -qx 'deleted_at' || { echo "accounts table columns missing: deleted_at" >&2; exit 1; }
+    printf '%s\n' "$columns" | grep -qx 'status' || { echo "accounts table columns missing: status" >&2; exit 1; }
+    printf '%s\n' "$columns" | grep -qx 'platform' || { echo "accounts table columns missing: platform" >&2; exit 1; }
+    printf '%s\n' "$columns" | grep -qx 'type' || { echo "accounts table columns missing: type" >&2; exit 1; }
+    echo "preflight checks passed"
+    return 0
+  fi
   python3 - <<'PY_PREFLIGHT_RUNTIME'
 import os
 import sys
@@ -396,6 +460,133 @@ PY_PREFLIGHT_RUNTIME
 
 run_health_check() {
   preflight_runtime
+  if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    docker exec \
+      -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
+      "$SUB2TEST_DB_CONTAINER" \
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -AtF $'\t' -c "SELECT id, COALESCE(name, ''), platform, type, status, COALESCE(error_message, ''), credentials::text, extra::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" \
+      | python3 - <<'PY_RUN_HEALTH_CHECK'
+import json
+import os
+import random
+import sys
+import time
+
+import requests
+
+def get_env(name: str, default: str = '') -> str:
+    return (os.getenv(name, default) or '').strip()
+
+sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
+sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
+timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
+concurrency = int(get_env('SUB2TEST_CONCURRENCY', '3') or '3')
+rows = [line.rstrip('\n').split('\t') for line in sys.stdin if line.strip()]
+print(f'loaded {len(rows)} active accounts (configured concurrency={concurrency})')
+if not rows:
+    sys.exit(0)
+
+session = requests.Session()
+headers = {'Accept': 'text/event-stream'}
+
+def as_dict(value):
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+claude_api_url = 'https://api.anthropic.com/v1/messages?beta=true'
+openai_api_url = 'https://api.openai.com/v1/responses'
+gemini_api_url = 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
+
+def choose_model(platform: str, account_type: str, credentials: dict, extra: dict) -> str:
+    platform = (platform or '').lower()
+    if platform == 'openai':
+        return 'gpt-5.4'
+    if platform == 'gemini':
+        return 'gemini-2.0-flash'
+    return 'claude-sonnet-4-5-20250929'
+
+for row in rows:
+    account_id, name, platform, account_type, status, error_message, credentials_raw, extra_raw = (row + [''] * 8)[:8]
+    credentials = as_dict(credentials_raw)
+    extra = as_dict(extra_raw)
+    model = choose_model(platform, account_type, credentials, extra)
+    started = time.time()
+    ok = False
+    detail = ''
+
+    try:
+        platform_key = (platform or '').lower()
+        type_key = (account_type or '').lower()
+
+        if platform_key == 'openai':
+            if type_key == 'oauth':
+                token = (credentials.get('access_token') or '').strip()
+                if not token:
+                    raise RuntimeError('missing access_token')
+                payload = {'model': model, 'input': 'hi', 'max_output_tokens': 32}
+                response = session.post(openai_api_url, headers={**headers, 'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}, json=payload, timeout=timeout_seconds)
+            elif type_key == 'apikey':
+                api_key = (credentials.get('api_key') or '').strip()
+                if not api_key:
+                    raise RuntimeError('missing api_key')
+                base_url = (credentials.get('base_url') or 'https://api.openai.com').rstrip('/')
+                payload = {'model': model, 'input': 'hi', 'max_output_tokens': 32}
+                response = session.post(f'{base_url}/v1/responses', headers={**headers, 'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, json=payload, timeout=timeout_seconds)
+            else:
+                raise RuntimeError(f'unsupported openai account type: {account_type}')
+        elif platform_key == 'gemini':
+            api_key = (credentials.get('api_key') or '').strip()
+            if not api_key:
+                raise RuntimeError('missing api_key')
+            payload = {'contents': [{'parts': [{'text': 'hi'}]}]}
+            response = session.post(gemini_api_url.format(model=model), params={'key': api_key}, headers={'Content-Type': 'application/json'}, json=payload, timeout=timeout_seconds)
+        elif platform_key in ('anthropic', 'claude'):
+            payload = {'model': model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 32, 'stream': False}
+            if type_key in ('oauth', 'setup_token'):
+                token = (credentials.get('access_token') or '').strip()
+                if not token:
+                    raise RuntimeError('missing access_token')
+                response = session.post(claude_api_url, headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01'}, json=payload, timeout=timeout_seconds)
+            elif type_key == 'apikey':
+                api_key = (credentials.get('api_key') or '').strip()
+                if not api_key:
+                    raise RuntimeError('missing api_key')
+                base_url = (credentials.get('base_url') or 'https://api.anthropic.com').rstrip('/')
+                response = session.post(f'{base_url}/v1/messages?beta=true', headers={'x-api-key': api_key, 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01'}, json=payload, timeout=timeout_seconds)
+            else:
+                raise RuntimeError(f'unsupported anthropic account type: {account_type}')
+        else:
+            raise RuntimeError(f'unsupported platform: {platform}')
+
+        ok = 200 <= response.status_code < 300
+        body = response.text.strip().replace('\n', ' ')
+        detail = body[:300] if body else response.reason
+        if not ok:
+            detail = f'http {response.status_code}: {detail}'
+    except Exception as exc:
+        detail = str(exc)
+
+    latency_ms = int((time.time() - started) * 1000)
+    result = 'success' if ok else 'failed'
+    display_name = (name or '').strip() or f'account-{account_id}'
+    print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} model={model} latency_ms={latency_ms} detail={detail}')
+
+    if sleep_max <= sleep_min:
+        time.sleep(max(sleep_min, 0))
+    else:
+        time.sleep(random.randint(max(sleep_min, 0), max(sleep_max, sleep_min)))
+PY_RUN_HEALTH_CHECK
+    return 0
+  fi
   python3 - <<'PY_RUN_HEALTH_CHECK'
 import json
 import os
@@ -635,6 +826,7 @@ show_config() {
   echo "SUB2TEST_DB_USER=${SUB2TEST_DB_USER:-}"
   echo "SUB2TEST_DB_NAME=${SUB2TEST_DB_NAME:-}"
   echo "SUB2TEST_DB_SSLMODE=${SUB2TEST_DB_SSLMODE:-disable}"
+  echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}"
   echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}"
   echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}"
   echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}"
@@ -679,6 +871,7 @@ edit_config() {
   edit_value SUB2TEST_DB_PASSWORD "${SUB2TEST_DB_PASSWORD:-}"
   edit_value SUB2TEST_DB_NAME "${SUB2TEST_DB_NAME:-}"
   edit_value SUB2TEST_DB_SSLMODE "${SUB2TEST_DB_SSLMODE:-disable}"
+  edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}"
   edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}"
   edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}"
   edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}"
