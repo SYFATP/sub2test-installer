@@ -461,11 +461,14 @@ PY_PREFLIGHT_RUNTIME
 run_health_check() {
   preflight_runtime
   if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    local accounts_tsv
+    accounts_tsv="$(mktemp)"
+    trap 'rm -f "$accounts_tsv"' RETURN
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -AtF $'\t' -c "SELECT id, COALESCE(name, ''), platform, type, status, COALESCE(error_message, ''), credentials::text, extra::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" \
-      | python3 - <<'PY_RUN_HEALTH_CHECK'
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -AtF $'\t' -c "SELECT id, COALESCE(name, ''), platform, type, status, COALESCE(error_message, ''), credentials::text, extra::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_tsv"
+    python3 - "$accounts_tsv" <<'PY_RUN_HEALTH_CHECK'
 import json
 import os
 import random
@@ -481,7 +484,9 @@ sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
 sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
 timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
 concurrency = int(get_env('SUB2TEST_CONCURRENCY', '3') or '3')
-rows = [line.rstrip('\n').split('\t') for line in sys.stdin if line.strip()]
+rows_file = sys.argv[1]
+with open(rows_file, 'r', encoding='utf-8') as fh:
+    rows = [line.rstrip('\n').split('\t') for line in fh if line.strip()]
 print(f'loaded {len(rows)} active accounts (configured concurrency={concurrency})')
 if not rows:
     sys.exit(0)
