@@ -639,6 +639,28 @@ def safe_exception_text(exc: Exception) -> str:
     return shorten_detail(' | '.join(str(part) for part in parts if part))
 
 
+def response_content_type(response) -> str:
+    try:
+        raw_headers = getattr(response.raw, 'headers', None)
+        if raw_headers is not None:
+            value = raw_headers.get('Content-Type')
+            if isinstance(value, bytes):
+                return value.decode('ascii', errors='ignore').lower()
+            if value:
+                return str(value).lower()
+    except Exception:
+        pass
+    try:
+        headers = getattr(response, 'headers', None)
+        if headers is not None:
+            value = headers.get('Content-Type')
+            if value:
+                return str(value).lower()
+    except Exception:
+        pass
+    return ''
+
+
 def response_error_detail(response):
     try:
         body = response.content.decode('utf-8', errors='replace').strip()
@@ -747,7 +769,7 @@ def run_account_test(row):
             if response.status_code != 200:
                 error_text = response_error_detail(response)
             else:
-                content_type = (response.headers.get('Content-Type') or '').lower()
+                content_type = response_content_type(response)
                 if 'text/event-stream' not in content_type:
                     error_text = f"unexpected content-type: {content_type or 'missing'}"
                 else:
