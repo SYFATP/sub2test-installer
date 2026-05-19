@@ -609,9 +609,18 @@ def get_env(name: str, default: str = '') -> str:
     return (os.getenv(name, default) or '').strip()
 
 def shorten_detail(detail: str) -> str:
-    detail = (detail or '').strip().replace('\\n', ' ')
+    detail = '' if detail is None else str(detail)
+    detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+    detail = detail.strip().replace('\\n', ' ')
     detail = ' '.join(detail.split())
     return detail[:180]
+
+
+def safe_exception_text(exc: Exception) -> str:
+    try:
+        return shorten_detail(str(exc))
+    except Exception:
+        return shorten_detail(repr(exc))
 
 
 def response_error_detail(response):
@@ -739,7 +748,7 @@ def run_account_test(row):
                 if not saw_success and not error_text:
                     error_text = shorten_detail(result_text) or 'test did not complete successfully'
     except Exception as exc:
-        error_text = shorten_detail(str(exc))
+        error_text = safe_exception_text(exc)
 
     latency_ms = int((time.time() - started) * 1000)
     native_status = classify_api_result(http_status, saw_success)
