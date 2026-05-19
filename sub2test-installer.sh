@@ -462,7 +462,7 @@ run_health_check() {
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, COALESCE(credentials::text, '{}'), COALESCE(extra::text, '{}') FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_tsv"
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, status, COALESCE(credentials::text, '{}'), COALESCE(extra::text, '{}') FROM accounts WHERE deleted_at IS NULL AND status IN ('error', 'active') ORDER BY CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC" > "$accounts_tsv"
     python3 - "$accounts_tsv" "$accounts_json" <<'PY_EXPORT_CONTAINER_ACCOUNTS'
 import json
 import sys
@@ -475,10 +475,10 @@ with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', enco
         line = raw_line.rstrip('\n')
         if not line:
             continue
-        parts = line.split('\t', 5)
-        if len(parts) != 6:
+        parts = line.split('\t', 6)
+        if len(parts) != 7:
             continue
-        account_id, name, platform, account_type, credentials_text, extra_text = parts
+        account_id, name, platform, account_type, status, credentials_text, extra_text = parts
         try:
             credentials = json.loads(credentials_text) if credentials_text else {}
         except Exception:
@@ -492,6 +492,7 @@ with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', enco
             'name': name,
             'platform': platform,
             'type': account_type,
+            'status': status,
             'credentials': credentials,
             'extra': extra,
         }, ensure_ascii=False) + '\n')
@@ -517,10 +518,10 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 cur.execute(
     """
-    SELECT id, name, platform, type, credentials, extra
+    SELECT id, name, platform, type, status, credentials, extra
     FROM accounts
-    WHERE deleted_at IS NULL AND status = 'active'
-    ORDER BY priority ASC, id ASC
+    WHERE deleted_at IS NULL AND status IN ('error', 'active')
+    ORDER BY CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC
     """
 )
 rows = cur.fetchall()
@@ -528,12 +529,13 @@ cur.close()
 conn.close()
 
 with open(output_path, 'w', encoding='utf-8') as fh:
-    for account_id, name, platform, account_type, credentials, extra in rows:
+    for account_id, name, platform, account_type, status, credentials, extra in rows:
         fh.write(json.dumps({
             'id': account_id,
             'name': name or '',
             'platform': platform,
             'type': account_type,
+            'status': status,
             'credentials': credentials,
             'extra': extra,
         }, ensure_ascii=False) + '\n')
@@ -548,6 +550,7 @@ import signal
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -569,15 +572,14 @@ def shorten_detail(detail: str) -> str:
 sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
 sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
 timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
-concurrency = int(get_env('SUB2TEST_CONCURRENCY', '3') or '3')
+batch_size = max(int(get_env('SUB2TEST_CONCURRENCY', '3') or '3'), 1)
 rows_file = sys.argv[1]
 with open(rows_file, 'r', encoding='utf-8') as fh:
     rows = [json.loads(line) for line in fh if line.strip()]
-print(f'loaded {len(rows)} active accounts (configured concurrency={concurrency})')
+print(f'loaded {len(rows)} accounts (batch_size={batch_size})')
 if not rows:
     sys.exit(0)
 
-session = requests.Session()
 counts = Counter()
 status_counts = Counter()
 pipe_closed = False
@@ -634,11 +636,12 @@ def classify_api_result(http_status: int | None, saw_success: bool) -> str:
     return 'failed'
 
 
-for row in rows:
+def run_account_test(row):
     account_id = row.get('id', '')
     name = row.get('name', '')
     platform = row.get('platform', '')
     account_type = row.get('type', '')
+    source_status = row.get('status', '')
     credentials = as_dict(row.get('credentials'))
     started = time.time()
     result_text = ''
@@ -647,59 +650,82 @@ for row in rows:
     error_text = ''
 
     try:
-        response = session.post(
-            f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}/test",
-            headers={
-                'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
-                'Content-Type': 'application/json',
-                'Accept': 'text/event-stream',
-            },
-            json={},
-            timeout=timeout_seconds,
-            stream=True,
-        )
-        http_status = response.status_code
-        if response.status_code != 200:
-            error_text = shorten_detail(response.text or response.reason or f'HTTP {response.status_code}')
-        else:
-            for chunk in parse_sse_events(response):
-                try:
-                    event = json.loads(chunk)
-                except Exception:
-                    continue
-                event_type = (event.get('type') or '').strip()
-                if event_type == 'content' and event.get('text'):
-                    result_text += event.get('text') or ''
-                elif event_type == 'test_complete':
-                    saw_success = bool(event.get('success'))
-                    if not saw_success:
+        with requests.Session() as session:
+            response = session.post(
+                f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}/test",
+                headers={
+                    'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream',
+                },
+                json={},
+                timeout=timeout_seconds,
+                stream=True,
+            )
+            http_status = response.status_code
+            if response.status_code != 200:
+                error_text = shorten_detail(response.text or response.reason or f'HTTP {response.status_code}')
+            else:
+                for chunk in parse_sse_events(response):
+                    try:
+                        event = json.loads(chunk)
+                    except Exception:
+                        continue
+                    event_type = (event.get('type') or '').strip()
+                    if event_type == 'content' and event.get('text'):
+                        result_text += event.get('text') or ''
+                    elif event_type == 'test_complete':
+                        saw_success = bool(event.get('success'))
+                        if not saw_success:
+                            error_text = shorten_detail((event.get('error') or '').strip())
+                    elif event_type == 'error':
                         error_text = shorten_detail((event.get('error') or '').strip())
-                elif event_type == 'error':
-                    error_text = shorten_detail((event.get('error') or '').strip())
-            if not saw_success and not error_text:
-                error_text = shorten_detail(result_text) or 'test did not complete successfully'
+                if not saw_success and not error_text:
+                    error_text = shorten_detail(result_text) or 'test did not complete successfully'
     except Exception as exc:
         error_text = shorten_detail(str(exc))
 
-    counts['success' if saw_success else 'failed'] += 1
-
     latency_ms = int((time.time() - started) * 1000)
-    result = 'success' if saw_success else 'failed'
     native_status = classify_api_result(http_status, saw_success)
-    status_counts[native_status] += 1
-    display_name = (name or '').strip() or f'account-{account_id}'
-    summary = summarize_credentials(credentials)
-    detail = shorten_detail(result_text if saw_success else error_text)
-    try:
-        print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} latency_ms={latency_ms} status={native_status} {summary} detail={detail}')
-    except BrokenPipeError:
-        pipe_closed = True
+    return {
+        'account_id': account_id,
+        'name': name,
+        'platform': platform,
+        'account_type': account_type,
+        'source_status': source_status,
+        'credentials': credentials,
+        'saw_success': saw_success,
+        'latency_ms': latency_ms,
+        'native_status': native_status,
+        'detail': shorten_detail(result_text if saw_success else error_text),
+    }
+
+
+for batch_start in range(0, len(rows), batch_size):
+    batch = rows[batch_start:batch_start + batch_size]
+    with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        batch_results = list(executor.map(run_account_test, batch))
+
+    for item in batch_results:
+        counts['success' if item['saw_success'] else 'failed'] += 1
+        status_counts[item['native_status']] += 1
+        result = 'success' if item['saw_success'] else 'failed'
+        display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
+        summary = summarize_credentials(item['credentials'])
+        try:
+            print(f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} {summary} detail={item['detail']}")
+        except BrokenPipeError:
+            pipe_closed = True
+            break
+
+    if pipe_closed:
         break
 
-    if sleep_max <= sleep_min:
-        time.sleep(max(sleep_min, 0))
-    else:
-        time.sleep(random.randint(max(sleep_min, 0), max(sleep_max, sleep_min)))
+    if batch_start + batch_size < len(rows):
+        if sleep_max <= sleep_min:
+            time.sleep(max(sleep_min, 0))
+        else:
+            time.sleep(random.randint(max(sleep_min, 0), max(sleep_max, sleep_min)))
 
 if not pipe_closed:
     try:
