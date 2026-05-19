@@ -599,6 +599,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 def get_env(name: str, default: str = '') -> str:
     return (os.getenv(name, default) or '').strip()
 
@@ -655,10 +661,13 @@ def as_dict(value):
 
 def parse_sse_events(response):
     event_buffer = []
-    for raw_line in response.iter_lines(decode_unicode=True):
+    for raw_line in response.iter_lines(decode_unicode=False):
         if raw_line is None:
             continue
-        line = raw_line.strip()
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode('utf-8', errors='replace').strip()
+        else:
+            line = str(raw_line).strip()
         if line == '':
             if event_buffer:
                 payload = '\n'.join(event_buffer).strip()
