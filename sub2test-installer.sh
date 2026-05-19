@@ -693,6 +693,34 @@ def request_exception_debug(exc: Exception) -> str:
     return shorten_detail(' | '.join(part for part in parts if part))
 
 
+def trace_transport_probe(account_id, timeout_seconds):
+    try:
+        response = requests.post(
+            f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}/test",
+            headers={
+                'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream',
+            },
+            json={},
+            timeout=timeout_seconds,
+            stream=True,
+        )
+        detail_parts = [
+            f"probe_status={response.status_code}",
+            f"probe_content_type={response_content_type(response) or 'missing'}",
+        ]
+        try:
+            body = response.content.decode('utf-8', errors='replace').strip()
+            if body:
+                detail_parts.append(f"probe_body={shorten_detail(body)}")
+        except Exception as probe_exc:
+            detail_parts.append(f"probe_body_error={safe_exception_text(probe_exc)}")
+        return shorten_detail(' | '.join(detail_parts))
+    except Exception as probe_exc:
+        return shorten_detail(f"probe_exception={request_exception_debug(probe_exc)}")
+
+
 def response_error_detail(response):
     try:
         body = response.content.decode('utf-8', errors='replace').strip()
@@ -823,6 +851,8 @@ def run_account_test(row):
                         error_text = shorten_detail(result_text) or 'test did not complete successfully'
     except Exception as exc:
         error_text = request_exception_debug(exc)
+        if 'UnicodeEncodeError' in error_text:
+            error_text = shorten_detail(error_text + ' | ' + trace_transport_probe(account_id, timeout_seconds))
 
     latency_ms = int((time.time() - started) * 1000)
     native_status = classify_api_result(http_status, saw_success)
