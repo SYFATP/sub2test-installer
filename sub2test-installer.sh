@@ -615,6 +615,7 @@ import random
 import signal
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -658,6 +659,18 @@ def safe_exception_text(exc: Exception) -> str:
     if text:
         parts.append(text)
     return shorten_detail(' | '.join(str(part) for part in parts if part))
+
+
+def traceback_summary(exc: Exception) -> str:
+    try:
+        entries = traceback.extract_tb(exc.__traceback__)
+    except Exception:
+        return ''
+    if not entries:
+        return ''
+    tail = entries[-3:]
+    parts = [f"{entry.name}@{entry.lineno}" for entry in tail]
+    return shorten_detail(' > '.join(parts))
 
 
 def response_content_type(response) -> str:
@@ -874,6 +887,9 @@ def run_account_test(row):
             error_text = response_error_detail(err.code, err.read())
     except Exception as exc:
         error_text = safe_exception_text(exc)
+        tb = traceback_summary(exc)
+        if tb:
+            error_text = shorten_detail(error_text + ' | traceback=' + tb)
 
     latency_ms = int((time.time() - started) * 1000)
     native_status = classify_api_result(http_status, saw_success)
