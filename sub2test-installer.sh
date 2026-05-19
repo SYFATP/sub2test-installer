@@ -123,13 +123,14 @@ SUB2TEST_DB_PASSWORD=
 SUB2TEST_DB_NAME=
 SUB2TEST_DB_SSLMODE=disable
 SUB2TEST_DB_CONTAINER=
+SUB2TEST_API_BASE_URL=
+SUB2TEST_ADMIN_API_KEY=
 SUB2TEST_ENABLED=false
 SUB2TEST_SCHEDULE=daily
 SUB2TEST_CONCURRENCY=3
 SUB2TEST_TIMEOUT_SECONDS=30
 SUB2TEST_SLEEP_MIN_SECONDS=3
 SUB2TEST_SLEEP_MAX_SECONDS=10
-SUB2TEST_PERMANENT_ERROR_THRESHOLD=3
 EOF
 
 python3 - "$LIB_FILE" "$CONFIG_FILE" "$DEFAULT_COMPOSE_FILE" "$DEFAULT_APP_CONFIG_FILE" <<'PY'
@@ -183,7 +184,7 @@ for line in lines:
         out.append(line)
 if not updated:
     out.append(f"{key}={value}")
-path.write_text("\\n".join(out) + "\\n", encoding='utf-8')
+path.write_text("\n".join(out) + "\n", encoding='utf-8')
 PY_SAVE_CONFIG
 }
 
@@ -263,96 +264,70 @@ def load_dotenv(env_path: Path):
         if not line or line.startswith('#') or '=' not in line:
             continue
         key, value = line.split('=', 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        values[key] = value
+        values[key.strip()] = value.strip().strip('"').strip("'")
     return values
 
-def resolve_value(raw: str, env_values: dict[str, str], default: str = ''):
-    raw = (raw or '').strip()
-    if not raw:
-        return default
-    if raw.startswith('${') and raw.endswith('}'):
-        inner = raw[2:-1]
-        if ':-' in inner:
-            key, fallback = inner.split(':-', 1)
-            return env_values.get(key, os.getenv(key, fallback)) or fallback
-        if ':?' in inner:
-            key, message = inner.split(':?', 1)
-            value = env_values.get(key, os.getenv(key, ''))
-            if not value:
-                print(f"Missing required compose variable: {key} ({message})", file=sys.stderr)
-                sys.exit(1)
-            return value
-        return env_values.get(inner, os.getenv(inner, default)) or default
-    return raw
-
-host = os.getenv('SUB2TEST_DB_HOST', '').strip()
-port = os.getenv('SUB2TEST_DB_PORT', '').strip()
-user = os.getenv('SUB2TEST_DB_USER', '').strip()
-password = os.getenv('SUB2TEST_DB_PASSWORD', '').strip()
-dbname = os.getenv('SUB2TEST_DB_NAME', '').strip()
-sslmode = os.getenv('SUB2TEST_DB_SSLMODE', 'disable').strip() or 'disable'
-container = os.getenv('SUB2TEST_DB_CONTAINER', '').strip()
-if container:
-    output(host or '127.0.0.1', port or '5432', user, password, dbname, sslmode, container)
-    sys.exit(0)
-if host and user and dbname:
-    output(host, port or '5432', user, password, dbname, sslmode, container)
-    sys.exit(0)
-
-deploy_mode = os.getenv('SUB2TEST_DEPLOY_MODE', 'compose').strip().lower()
-compose_file = Path(os.getenv('SUB2TEST_COMPOSE_FILE', '__COMPOSE_FILE__'))
-app_config = Path(os.getenv('SUB2API_CONFIG_FILE', '__APP_CONFIG_FILE__'))
-
-if deploy_mode == 'compose' and compose_file.exists():
-    text = compose_file.read_text(encoding='utf-8')
-    dotenv = load_dotenv(compose_file.parent / '.env')
-
-    def find_env_value(name, default=''):
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.startswith(f'- {name}='):
-                return resolve_value(line.split('=', 1)[1].strip(), dotenv, default)
-            if line.startswith(f'{name}:'):
-                value = line.split(':', 1)[1].strip().strip('"').strip("'")
-                return resolve_value(value, dotenv, default)
-        return default
-
-    def find_service_value(service_name, key, default=''):
-        pattern = rf'{service_name}:.*?^\\s+environment:\\n(?P<body>(?:^\\s+.+\\n)+)'
-        match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
-        if not match:
-            return default
-        body = match.group('body')
-        inline_match = re.search(rf'^\\s+{key}:\\s*(.+)$', body, re.MULTILINE)
+def parse_compose(path: Path):
+    text = path.read_text(encoding='utf-8')
+    env_match = re.search(r'\n\s+db:\n([\s\S]*?)(?:\n\S|\Z)', text)
+    body = env_match.group(1) if env_match else text
+    def env_value(key):
+        patterns = [
+            rf'^\s+-\s*{key}=(.+)$',
+            rf'^\s+{key}:\s*["\']?(.+?)["\']?$',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+            if match:
+                return match.group(1).strip().strip('"').strip("'")
+        inline_match = re.search(rf'^\s+{key}:\s*(.+)$', body, re.MULTILINE)
         if inline_match:
-            return resolve_value(inline_match.group(1).strip(), dotenv, default)
-        return default
+            return inline_match.group(1).strip().strip('"').strip("'")
+        return ''
 
-    container_match = re.search(r'^\\s*container_name:\\s*([^\\s#]+)\\s*$', text, re.MULTILINE)
+    container_match = re.search(r'^\s*container_name:\s*([^\s#]+)\s*$', text, re.MULTILINE)
     container_name = container_match.group(1).strip() if container_match else ''
-    host = find_env_value('DATABASE_HOST', '')
-    port = find_env_value('DATABASE_PORT', '5432')
-    user = find_env_value('DATABASE_USER', '')
-    password = find_env_value('DATABASE_PASSWORD', '')
-    dbname = find_env_value('DATABASE_DBNAME', '')
-    sslmode = find_env_value('DATABASE_SSLMODE', 'disable') or 'disable'
+    return {
+        'host': env_value('POSTGRES_HOST') or 'db',
+        'port': env_value('POSTGRES_PORT') or '5432',
+        'user': env_value('POSTGRES_USER') or 'postgres',
+        'password': env_value('POSTGRES_PASSWORD'),
+        'dbname': env_value('POSTGRES_DB') or 'sub2api',
+        'sslmode': 'disable',
+        'container': container_name,
+    }
 
-    if not user:
-        user = find_service_value('sub2api-db', 'POSTGRES_USER', '') or find_env_value('POSTGRES_USER', '')
-    if not password:
-        password = find_service_value('sub2api-db', 'POSTGRES_PASSWORD', '') or find_env_value('POSTGRES_PASSWORD', '')
-    if not dbname:
-        dbname = find_service_value('sub2api-db', 'POSTGRES_DB', '') or find_env_value('POSTGRES_DB', '')
-    if not host:
-        host = '127.0.0.1' if container_name else 'postgres'
-
-    output(host, port, user, password, dbname, sslmode, container_name)
+explicit = {
+    'host': os.getenv('SUB2TEST_DB_HOST', '').strip(),
+    'port': os.getenv('SUB2TEST_DB_PORT', '').strip(),
+    'user': os.getenv('SUB2TEST_DB_USER', '').strip(),
+    'password': os.getenv('SUB2TEST_DB_PASSWORD', '').strip(),
+    'dbname': os.getenv('SUB2TEST_DB_NAME', '').strip(),
+    'sslmode': os.getenv('SUB2TEST_DB_SSLMODE', 'disable').strip() or 'disable',
+    'container': os.getenv('SUB2TEST_DB_CONTAINER', '').strip(),
+}
+if explicit['container']:
+    output(explicit['host'], explicit['port'] or '5432', explicit['user'], explicit['password'], explicit['dbname'], explicit['sslmode'], explicit['container'])
+    sys.exit(0)
+if explicit['host'] and explicit['user'] and explicit['dbname']:
+    output(explicit['host'], explicit['port'] or '5432', explicit['user'], explicit['password'], explicit['dbname'], explicit['sslmode'], '')
     sys.exit(0)
 
+compose_path = Path(os.getenv('SUB2TEST_COMPOSE_FILE', '__COMPOSE_FILE__'))
+if compose_path.exists():
+    compose_values = parse_compose(compose_path)
+    output(
+        compose_values['host'],
+        compose_values['port'],
+        compose_values['user'],
+        compose_values['password'],
+        compose_values['dbname'],
+        compose_values['sslmode'],
+        compose_values['container'],
+    )
+    sys.exit(0)
+
+app_config = Path(os.getenv('SUB2API_CONFIG_FILE', '__APP_CONFIG_FILE__'))
 if app_config.exists():
     try:
         import yaml
@@ -376,11 +351,27 @@ sys.exit(1)
 PY_RESOLVE_DB
 }
 
+preflight_api_config() {
+  local api_base_url="${SUB2TEST_API_BASE_URL:-}"
+  local admin_api_key="${SUB2TEST_ADMIN_API_KEY:-}"
+
+  if [ -z "$api_base_url" ]; then
+    echo "SUB2TEST_API_BASE_URL is required" >&2
+    exit 1
+  fi
+
+  if [ -z "$admin_api_key" ]; then
+    echo "SUB2TEST_ADMIN_API_KEY is required" >&2
+    exit 1
+  fi
+}
+
 preflight_runtime() {
   require_python_module yaml python3-yaml
   require_python_module psycopg2 python3-psycopg2
   require_python_module requests python3-requests
   preflight_config_source
+  preflight_api_config
   eval "$(resolve_db_config)"
   export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
   if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
@@ -461,21 +452,64 @@ PY_PREFLIGHT_RUNTIME
 
 run_health_check() {
   preflight_runtime
+  local accounts_json
+  accounts_json="$(mktemp)"
+  trap 'rm -f "$accounts_json"' RETURN
+
   if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
-    local accounts_json
-    accounts_json="$(mktemp)"
-    trap 'rm -f "$accounts_json"' RETURN
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -At -c "SELECT json_build_object('id', id, 'name', COALESCE(name, ''), 'platform', platform, 'type', type, 'status', status, 'error_message', COALESCE(error_message, ''), 'rate_limited_at', rate_limited_at, 'rate_limit_reset_at', rate_limit_reset_at, 'overload_until', overload_until, 'temp_unschedulable_until', temp_unschedulable_until, 'temp_unschedulable_reason', COALESCE(temp_unschedulable_reason, ''), 'credentials', credentials, 'extra', extra)::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_json"
-    python3 - "$accounts_json" <<'PY_RUN_HEALTH_CHECK'
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -At -c "SELECT json_build_object('id', id, 'name', COALESCE(name, ''), 'platform', platform, 'type', type, 'credentials', credentials, 'extra', extra)::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_json"
+  else
+    python3 - "$accounts_json" <<'PY_EXPORT_ACCOUNTS'
+import json
+import os
+import sys
+
+import psycopg2
+
+output_path = sys.argv[1]
+
+conn = psycopg2.connect(
+    host=os.environ['SUB2TEST_DB_HOST'],
+    port=os.environ['SUB2TEST_DB_PORT'],
+    user=os.environ['SUB2TEST_DB_USER'],
+    password=os.getenv('SUB2TEST_DB_PASSWORD', ''),
+    dbname=os.environ['SUB2TEST_DB_NAME'],
+    sslmode=os.getenv('SUB2TEST_DB_SSLMODE', 'disable'),
+)
+cur = conn.cursor()
+cur.execute(
+    """
+    SELECT id, name, platform, type, credentials, extra
+    FROM accounts
+    WHERE deleted_at IS NULL AND status = 'active'
+    ORDER BY priority ASC, id ASC
+    """
+)
+rows = cur.fetchall()
+cur.close()
+conn.close()
+
+with open(output_path, 'w', encoding='utf-8') as fh:
+    for account_id, name, platform, account_type, credentials, extra in rows:
+        fh.write(json.dumps({
+            'id': account_id,
+            'name': name or '',
+            'platform': platform,
+            'type': account_type,
+            'credentials': credentials,
+            'extra': extra,
+        }, ensure_ascii=False) + '\n')
+PY_EXPORT_ACCOUNTS
+  fi
+
+  python3 - "$accounts_json" <<'PY_RUN_HEALTH_CHECK'
 import json
 import os
 import random
-import re
 import signal
-import subprocess
 import sys
 import time
 from collections import Counter
@@ -490,10 +524,6 @@ def summarize_credentials(credentials: dict) -> str:
         return 'credentials=none'
     if credentials.get('email'):
         return f"email={credentials['email']}"
-    if credentials.get('organization_id'):
-        return f"organization_id={credentials['organization_id']}"
-    if credentials.get('chatgpt_account_id'):
-        return f"chatgpt_account_id={credentials['chatgpt_account_id']}"
     return 'credentials=present'
 
 def shorten_detail(detail: str) -> str:
@@ -513,7 +543,6 @@ if not rows:
     sys.exit(0)
 
 session = requests.Session()
-headers = {'Accept': 'text/event-stream'}
 counts = Counter()
 status_counts = Counter()
 pipe_closed = False
@@ -538,131 +567,37 @@ def as_dict(value):
             return {}
     return {}
 
-claude_api_url = 'https://api.anthropic.com/v1/messages?beta=true'
-openai_api_url = 'https://api.openai.com/v1/responses'
-gemini_api_url = 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
 
-def choose_model(platform: str, account_type: str, credentials: dict, extra: dict) -> str:
-    platform = (platform or '').lower()
-    if platform == 'openai':
-        return 'gpt-5.4'
-    if platform == 'gemini':
-        return 'gemini-2.0-flash'
-    return 'claude-sonnet-4-5-20250929'
-
-
-def shell_quote(value: str) -> str:
-    return "'" + (value or '').replace("'", "'\"'\"'") + "'"
-
-
-def run_psql_update(sql: str) -> bool:
-    if not sql.strip():
-        return False
-    try:
-        subprocess.run([
-            'docker', 'exec', '-e', f'PGPASSWORD={get_env("SUB2TEST_DB_PASSWORD")}', get_env('SUB2TEST_DB_CONTAINER'),
-            'psql', '-U', get_env('SUB2TEST_DB_USER'), '-d', get_env('SUB2TEST_DB_NAME'), '-c', sql,
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except Exception:
-        return False
-
-
-def parse_rate_limit_reset(response, detail_text: str) -> int | None:
-    candidates = []
-    for key in ('x-ratelimit-reset', 'x-ratelimit-reset-requests', 'retry-after'):
-        value = (response.headers.get(key) or '').strip()
-        if value:
-            candidates.append(value)
-    text = detail_text or ''
-    for pattern in (
-        r'"reset[_ ]?at"\s*:\s*(\d+)',
-        r'"reset[_ ]?time"\s*:\s*(\d+)',
-        r'"retry[_ -]?after"\s*:\s*(\d+)',
-        r'"resets_at"\s*:\s*"(\d+)"',
-    ):
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            candidates.append(match.group(1))
-    now = int(time.time())
-    for raw in candidates:
-        try:
-            value = int(float(raw))
-        except Exception:
+def parse_sse_events(response):
+    event_buffer = []
+    for raw_line in response.iter_lines(decode_unicode=True):
+        if raw_line is None:
             continue
-        if value > now + 315360000:
-            value = value // 1000
-        if value > now + 60:
-            return value
-        if 0 < value <= 86400:
-            return now + value
-    return None
+        line = raw_line.strip()
+        if line == '':
+            if event_buffer:
+                payload = '\n'.join(event_buffer).strip()
+                event_buffer.clear()
+                if payload:
+                    yield payload
+            continue
+        if line.startswith('data:'):
+            event_buffer.append(line[5:].strip())
+    if event_buffer:
+        payload = '\n'.join(event_buffer).strip()
+        if payload:
+            yield payload
 
 
-def build_writeback_sql(row: dict, native_status: str, detail_text: str, response=None) -> tuple[str, str]:
-    account_id = int(row.get('id') or 0)
-    current_status = (row.get('status') or '').strip()
-    extra = as_dict(row.get('extra'))
-    has_runtime_state = any([
-        row.get('rate_limited_at'),
-        row.get('rate_limit_reset_at'),
-        row.get('overload_until'),
-        row.get('temp_unschedulable_until'),
-        (row.get('temp_unschedulable_reason') or '').strip(),
-        bool(extra.get('model_rate_limits')),
-        bool(extra.get('antigravity_quota_scopes')),
-    ])
+def classify_api_result(http_status: int | None, saw_success: bool) -> str:
+    if saw_success:
+        return 'success'
+    if http_status == 429:
+        return 'rate_limited'
+    if http_status == 401:
+        return 'error'
+    return 'failed'
 
-    if account_id <= 0:
-        return '', 'skipped'
-
-    if native_status == 'error':
-        sql = (
-            'UPDATE accounts '
-            f"SET status = 'error', error_message = {shell_quote(detail_text)}, updated_at = NOW() "
-            f'WHERE id = {account_id} AND deleted_at IS NULL;'
-        )
-        return sql, 'applied'
-
-    if native_status == 'rate_limited':
-        reset_at = parse_rate_limit_reset(response, detail_text) if response is not None else None
-        if reset_at is None:
-            return '', 'skipped'
-        assignments = [
-            'rate_limited_at = NOW()',
-            f"rate_limit_reset_at = to_timestamp({reset_at})",
-            'updated_at = NOW()',
-        ]
-        if current_status == 'error':
-            assignments.insert(0, "status = 'active'")
-            assignments.insert(1, "error_message = ''")
-        sql = (
-            'UPDATE accounts SET ' + ', '.join(assignments) +
-            f' WHERE id = {account_id} AND deleted_at IS NULL;'
-        )
-        return sql, 'applied'
-
-    if native_status == 'success':
-        if current_status != 'error' and not has_runtime_state:
-            return '', 'skipped'
-        assignments = [
-            "status = 'active'",
-            "error_message = ''",
-            'rate_limited_at = NULL',
-            'rate_limit_reset_at = NULL',
-            'overload_until = NULL',
-            'temp_unschedulable_until = NULL',
-            "temp_unschedulable_reason = ''",
-            "extra = COALESCE(extra, '{}'::jsonb) - 'model_rate_limits' - 'antigravity_quota_scopes'",
-            'updated_at = NOW()',
-        ]
-        sql = (
-            'UPDATE accounts SET ' + ', '.join(assignments) +
-            f' WHERE id = {account_id} AND deleted_at IS NULL;'
-        )
-        return sql, 'applied'
-
-    return '', 'skipped'
 
 for row in rows:
     account_id = row.get('id', '')
@@ -670,91 +605,58 @@ for row in rows:
     platform = row.get('platform', '')
     account_type = row.get('type', '')
     credentials = as_dict(row.get('credentials'))
-    extra = as_dict(row.get('extra'))
-    model = choose_model(platform, account_type, credentials, extra)
     started = time.time()
-    ok = False
-    detail = ''
-    status_code = None
+    result_text = ''
+    saw_success = False
+    http_status = None
+    error_text = ''
 
     try:
-        response = None
-        platform_key = (platform or '').lower()
-        type_key = (account_type or '').lower()
-
-        if platform_key == 'openai':
-            if type_key == 'oauth':
-                token = (credentials.get('access_token') or '').strip()
-                if not token:
-                    raise RuntimeError('missing access_token')
-                payload = {'model': model, 'input': 'hi', 'max_output_tokens': 32}
-                response = session.post(openai_api_url, headers={**headers, 'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}, json=payload, timeout=timeout_seconds)
-            elif type_key == 'apikey':
-                api_key = (credentials.get('api_key') or '').strip()
-                if not api_key:
-                    raise RuntimeError('missing api_key')
-                base_url = (credentials.get('base_url') or 'https://api.openai.com').rstrip('/')
-                payload = {'model': model, 'input': 'hi', 'max_output_tokens': 32}
-                response = session.post(f'{base_url}/v1/responses', headers={**headers, 'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, json=payload, timeout=timeout_seconds)
-            else:
-                raise RuntimeError(f'unsupported openai account type: {account_type}')
-        elif platform_key == 'gemini':
-            api_key = (credentials.get('api_key') or '').strip()
-            if not api_key:
-                raise RuntimeError('missing api_key')
-            payload = {'contents': [{'parts': [{'text': 'hi'}]}]}
-            response = session.post(gemini_api_url.format(model=model), params={'key': api_key}, headers={'Content-Type': 'application/json'}, json=payload, timeout=timeout_seconds)
-        elif platform_key in ('anthropic', 'claude'):
-            payload = {'model': model, 'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 32, 'stream': False}
-            if type_key in ('oauth', 'setup_token'):
-                token = (credentials.get('access_token') or '').strip()
-                if not token:
-                    raise RuntimeError('missing access_token')
-                response = session.post(claude_api_url, headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01'}, json=payload, timeout=timeout_seconds)
-            elif type_key == 'apikey':
-                api_key = (credentials.get('api_key') or '').strip()
-                if not api_key:
-                    raise RuntimeError('missing api_key')
-                base_url = (credentials.get('base_url') or 'https://api.anthropic.com').rstrip('/')
-                response = session.post(f'{base_url}/v1/messages?beta=true', headers={'x-api-key': api_key, 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01'}, json=payload, timeout=timeout_seconds)
-            else:
-                raise RuntimeError(f'unsupported anthropic account type: {account_type}')
+        response = session.post(
+            f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}/test",
+            headers={
+                'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream',
+            },
+            json={},
+            timeout=timeout_seconds,
+            stream=True,
+        )
+        http_status = response.status_code
+        if response.status_code != 200:
+            error_text = shorten_detail(response.text or response.reason or f'HTTP {response.status_code}')
         else:
-            raise RuntimeError(f'unsupported platform: {platform}')
-
-        status_code = response.status_code
-        ok = 200 <= response.status_code < 300
-        body = shorten_detail(response.text)
-        detail = body or response.reason or 'empty response'
-        if not ok:
-            if response.status_code == 401:
-                detail = f'Authentication failed (401): {detail}'
-            else:
-                detail = f'API returned {response.status_code}: {detail}'
+            for chunk in parse_sse_events(response):
+                try:
+                    event = json.loads(chunk)
+                except Exception:
+                    continue
+                event_type = (event.get('type') or '').strip()
+                if event_type == 'content' and event.get('text'):
+                    result_text += event.get('text') or ''
+                elif event_type == 'test_complete':
+                    saw_success = bool(event.get('success'))
+                    if not saw_success:
+                        error_text = shorten_detail((event.get('error') or '').strip())
+                elif event_type == 'error':
+                    error_text = shorten_detail((event.get('error') or '').strip())
+            if not saw_success and not error_text:
+                error_text = shorten_detail(result_text) or 'test did not complete successfully'
     except Exception as exc:
-        detail = shorten_detail(str(exc))
-        response = None
+        error_text = shorten_detail(str(exc))
 
-    counts['success' if ok else 'failed'] += 1
+    counts['success' if saw_success else 'failed'] += 1
 
     latency_ms = int((time.time() - started) * 1000)
-    result = 'success' if ok else 'failed'
-    if ok:
-        native_status = 'success'
-    elif status_code == 401:
-        native_status = 'error'
-    elif status_code == 429:
-        native_status = 'rate_limited'
-    else:
-        native_status = 'failed'
+    result = 'success' if saw_success else 'failed'
+    native_status = classify_api_result(http_status, saw_success)
     status_counts[native_status] += 1
-    writeback_sql, writeback_state = build_writeback_sql(row, native_status, detail, response)
-    if writeback_sql:
-        writeback_state = 'applied' if run_psql_update(writeback_sql) else 'failed'
     display_name = (name or '').strip() or f'account-{account_id}'
     summary = summarize_credentials(credentials)
+    detail = shorten_detail(result_text if saw_success else error_text)
     try:
-        print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} model={model} latency_ms={latency_ms} status={native_status} writeback={writeback_state} {summary} detail={detail}')
+        print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} latency_ms={latency_ms} status={native_status} {summary} detail={detail}')
     except BrokenPipeError:
         pipe_closed = True
         break
@@ -772,209 +674,6 @@ if not pipe_closed:
                 print(f'summary status_{key}={status_counts[key]}')
     except BrokenPipeError:
         pass
-PY_RUN_HEALTH_CHECK
-    return 0
-  fi
-  python3 - <<'PY_RUN_HEALTH_CHECK'
-import json
-import os
-import random
-import sys
-import time
-
-import psycopg2
-import requests
-
-def get_env(name: str, default: str = '') -> str:
-    return (os.getenv(name, default) or '').strip()
-
-sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
-sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
-timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
-concurrency = int(get_env('SUB2TEST_CONCURRENCY', '3') or '3')
-
-conn = psycopg2.connect(
-    host=os.environ['SUB2TEST_DB_HOST'],
-    port=os.environ['SUB2TEST_DB_PORT'],
-    user=os.environ['SUB2TEST_DB_USER'],
-    password=os.getenv('SUB2TEST_DB_PASSWORD', ''),
-    dbname=os.environ['SUB2TEST_DB_NAME'],
-    sslmode=os.getenv('SUB2TEST_DB_SSLMODE', 'disable'),
-)
-cur = conn.cursor()
-cur.execute(
-    """
-    SELECT id, name, platform, type, status, error_message, credentials, extra
-    FROM accounts
-    WHERE deleted_at IS NULL AND status = 'active'
-    ORDER BY priority ASC, id ASC
-    """
-)
-rows = cur.fetchall()
-cur.close()
-conn.close()
-
-print(f'loaded {len(rows)} active accounts (configured concurrency={concurrency})')
-if not rows:
-    sys.exit(0)
-
-session = requests.Session()
-headers = {'Accept': 'text/event-stream'}
-
-def as_dict(value):
-    if isinstance(value, dict):
-        return value
-    if value is None:
-        return {}
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
-    return {}
-
-claude_api_url = 'https://api.anthropic.com/v1/messages?beta=true'
-openai_api_url = 'https://api.openai.com/v1/responses'
-gemini_api_url = 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
-
-def choose_model(platform: str, account_type: str, credentials: dict, extra: dict) -> str:
-    platform = (platform or '').lower()
-    if platform == 'openai':
-        return 'gpt-5.4'
-    if platform == 'gemini':
-        return 'gemini-2.0-flash'
-    return 'claude-sonnet-4-5-20250929'
-
-for account_id, name, platform, account_type, status, error_message, credentials_raw, extra_raw in rows:
-    credentials = as_dict(credentials_raw)
-    extra = as_dict(extra_raw)
-    model = choose_model(platform, account_type, credentials, extra)
-    started = time.time()
-    ok = False
-    detail = ''
-
-    try:
-        platform_key = (platform or '').lower()
-        type_key = (account_type or '').lower()
-
-        if platform_key == 'openai':
-            if type_key == 'oauth':
-                token = (credentials.get('access_token') or '').strip()
-                if not token:
-                    raise RuntimeError('missing access_token')
-                payload = {
-                    'model': model,
-                    'input': 'hi',
-                    'max_output_tokens': 32,
-                }
-                response = session.post(
-                    openai_api_url,
-                    headers={**headers, 'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
-                    json=payload,
-                    timeout=timeout_seconds,
-                )
-            elif type_key == 'apikey':
-                api_key = (credentials.get('api_key') or '').strip()
-                if not api_key:
-                    raise RuntimeError('missing api_key')
-                base_url = (credentials.get('base_url') or 'https://api.openai.com').rstrip('/')
-                payload = {
-                    'model': model,
-                    'input': 'hi',
-                    'max_output_tokens': 32,
-                }
-                response = session.post(
-                    f'{base_url}/v1/responses',
-                    headers={**headers, 'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-                    json=payload,
-                    timeout=timeout_seconds,
-                )
-            else:
-                raise RuntimeError(f'unsupported openai account type: {account_type}')
-        elif platform_key == 'gemini':
-            api_key = (credentials.get('api_key') or '').strip()
-            if not api_key:
-                raise RuntimeError('missing api_key')
-            payload = {
-                'contents': [
-                    {
-                        'parts': [
-                            {'text': 'hi'}
-                        ]
-                    }
-                ]
-            }
-            response = session.post(
-                gemini_api_url.format(model=model),
-                params={'key': api_key},
-                headers={'Content-Type': 'application/json'},
-                json=payload,
-                timeout=timeout_seconds,
-            )
-        elif platform_key in ('anthropic', 'claude'):
-            payload = {
-                'model': model,
-                'messages': [
-                    {
-                        'role': 'user',
-                        'content': 'hi',
-                    }
-                ],
-                'max_tokens': 32,
-                'stream': False,
-            }
-            if type_key in ('oauth', 'setup_token'):
-                token = (credentials.get('access_token') or '').strip()
-                if not token:
-                    raise RuntimeError('missing access_token')
-                response = session.post(
-                    claude_api_url,
-                    headers={
-                        'Authorization': f'Bearer {token}',
-                        'Content-Type': 'application/json',
-                        'anthropic-version': '2023-06-01',
-                    },
-                    json=payload,
-                    timeout=timeout_seconds,
-                )
-            elif type_key == 'apikey':
-                api_key = (credentials.get('api_key') or '').strip()
-                if not api_key:
-                    raise RuntimeError('missing api_key')
-                base_url = (credentials.get('base_url') or 'https://api.anthropic.com').rstrip('/')
-                response = session.post(
-                    f'{base_url}/v1/messages?beta=true',
-                    headers={
-                        'x-api-key': api_key,
-                        'Content-Type': 'application/json',
-                        'anthropic-version': '2023-06-01',
-                    },
-                    json=payload,
-                    timeout=timeout_seconds,
-                )
-            else:
-                raise RuntimeError(f'unsupported anthropic account type: {account_type}')
-        else:
-            raise RuntimeError(f'unsupported platform: {platform}')
-
-        ok = 200 <= response.status_code < 300
-        body = response.text.strip().replace('\\n', ' ')
-        detail = body[:300] if body else response.reason
-        if not ok:
-            detail = f'http {response.status_code}: {detail}'
-    except Exception as exc:
-        detail = str(exc)
-
-    latency_ms = int((time.time() - started) * 1000)
-    result = 'success' if ok else 'failed'
-    display_name = (name or '').strip() or f'account-{account_id}'
-    print(f'[{result}] account={account_id} name={display_name} platform={platform} type={account_type} model={model} latency_ms={latency_ms} detail={detail}')
-
-    if sleep_max <= sleep_min:
-        time.sleep(max(sleep_min, 0))
-    else:
-        time.sleep(random.randint(max(sleep_min, 0), max(sleep_max, sleep_min)))
 PY_RUN_HEALTH_CHECK
 }
 '''
@@ -1015,13 +714,14 @@ show_config() {
   echo "SUB2TEST_DB_NAME=${SUB2TEST_DB_NAME:-}"
   echo "SUB2TEST_DB_SSLMODE=${SUB2TEST_DB_SSLMODE:-disable}"
   echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}"
+  echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}"
+  echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}"
   echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}"
   echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}"
   echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}"
   echo "SUB2TEST_TIMEOUT_SECONDS=${SUB2TEST_TIMEOUT_SECONDS:-30}"
   echo "SUB2TEST_SLEEP_MIN_SECONDS=${SUB2TEST_SLEEP_MIN_SECONDS:-3}"
   echo "SUB2TEST_SLEEP_MAX_SECONDS=${SUB2TEST_SLEEP_MAX_SECONDS:-10}"
-  echo "SUB2TEST_PERMANENT_ERROR_THRESHOLD=${SUB2TEST_PERMANENT_ERROR_THRESHOLD:-3}"
 }
 
 edit_value() {
@@ -1060,12 +760,13 @@ edit_config() {
   edit_value SUB2TEST_DB_NAME "${SUB2TEST_DB_NAME:-}"
   edit_value SUB2TEST_DB_SSLMODE "${SUB2TEST_DB_SSLMODE:-disable}"
   edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}"
+  edit_value SUB2TEST_API_BASE_URL "${SUB2TEST_API_BASE_URL:-http://127.0.0.1:8080/api/v1}"
+  edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}"
   edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}"
   edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}"
   edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}"
   edit_value SUB2TEST_SLEEP_MIN_SECONDS "${SUB2TEST_SLEEP_MIN_SECONDS:-3}"
   edit_value SUB2TEST_SLEEP_MAX_SECONDS "${SUB2TEST_SLEEP_MAX_SECONDS:-10}"
-  edit_value SUB2TEST_PERMANENT_ERROR_THRESHOLD "${SUB2TEST_PERMANENT_ERROR_THRESHOLD:-3}"
   preflight_runtime
   render_timer
   systemctl daemon-reload
@@ -1085,6 +786,7 @@ run_once() {
   . "$SUB2TEST_CONFIG_FILE"
   export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
   export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
+  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY
   export SUB2TEST_SLEEP_MIN_SECONDS SUB2TEST_SLEEP_MAX_SECONDS
   run_health_check
 }
