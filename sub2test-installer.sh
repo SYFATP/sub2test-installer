@@ -264,14 +264,19 @@ import re
 import sys
 from pathlib import Path
 
+def shell_quote(value: str) -> str:
+    value = '' if value is None else str(value)
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
 def output(host, port, user, password, dbname, sslmode, container=''):
-    print(f"SUB2TEST_DB_HOST={host}")
-    print(f"SUB2TEST_DB_PORT={port}")
-    print(f"SUB2TEST_DB_USER={user}")
-    print(f"SUB2TEST_DB_PASSWORD={password}")
-    print(f"SUB2TEST_DB_NAME={dbname}")
-    print(f"SUB2TEST_DB_SSLMODE={sslmode}")
-    print(f"SUB2TEST_DB_CONTAINER={container}")
+    print(f"SUB2TEST_DB_HOST={shell_quote(host)}")
+    print(f"SUB2TEST_DB_PORT={shell_quote(port)}")
+    print(f"SUB2TEST_DB_USER={shell_quote(user)}")
+    print(f"SUB2TEST_DB_PASSWORD={shell_quote(password)}")
+    print(f"SUB2TEST_DB_NAME={shell_quote(dbname)}")
+    print(f"SUB2TEST_DB_SSLMODE={shell_quote(sslmode)}")
+    print(f"SUB2TEST_DB_CONTAINER={shell_quote(container)}")
 
 def load_dotenv(env_path: Path):
     values = {}
@@ -287,8 +292,27 @@ def load_dotenv(env_path: Path):
 
 def parse_compose(path: Path):
     text = path.read_text(encoding='utf-8')
+    env_file_values = {}
+
+    env_file_match = re.search(r'^\s*env_file:\s*([^\n#]+)$', text, re.MULTILINE)
+    if env_file_match:
+        env_file_path = env_file_match.group(1).strip().strip('"').strip("'")
+        if env_file_path:
+            candidate = (path.parent / env_file_path).resolve() if not Path(env_file_path).is_absolute() else Path(env_file_path)
+            env_file_values.update(load_dotenv(candidate))
+
     env_match = re.search(r'\n\s+db:\n([\s\S]*?)(?:\n\S|\Z)', text)
     body = env_match.group(1) if env_match else text
+
+    def resolve_env_reference(value: str) -> str:
+        value = value.strip().strip('"').strip("'")
+        exact = re.fullmatch(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}', value)
+        if exact:
+            var_name = exact.group(1)
+            default_value = exact.group(2)
+            return env_file_values.get(var_name, os.getenv(var_name, default_value or ''))
+        return value
+
     def env_value(key):
         patterns = [
             rf'^\s+-\s*{key}=(.+)$',
@@ -297,10 +321,12 @@ def parse_compose(path: Path):
         for pattern in patterns:
             match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
             if match:
-                return match.group(1).strip().strip('"').strip("'")
+                return resolve_env_reference(match.group(1))
         inline_match = re.search(rf'^\s+{key}:\s*(.+)$', body, re.MULTILINE)
         if inline_match:
-            return inline_match.group(1).strip().strip('"').strip("'")
+            return resolve_env_reference(inline_match.group(1))
+        if key in env_file_values:
+            return env_file_values[key]
         return ''
 
     container_match = re.search(r'^\s*container_name:\s*([^\s#]+)\s*$', text, re.MULTILINE)
