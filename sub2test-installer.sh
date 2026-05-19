@@ -113,23 +113,41 @@ fi
 mkdir -p "$INSTALL_ROOT" "$CONFIG_DIR"
 
 cat > "$CONFIG_FILE" <<EOF
+# sub2test 运行模式：compose=优先从 docker-compose / config.yaml 自动推断数据库信息
 SUB2TEST_DEPLOY_MODE=compose
+# Sub2API 的 docker-compose.yml 路径，用于自动识别数据库配置
 SUB2TEST_COMPOSE_FILE=$DEFAULT_COMPOSE_FILE
+# Sub2API 的 config.yaml 路径，用于自动识别数据库配置
 SUB2API_CONFIG_FILE=$DEFAULT_APP_CONFIG_FILE
+# 数据库主机地址；留空时尝试自动识别
 SUB2TEST_DB_HOST=
+# 数据库端口
 SUB2TEST_DB_PORT=5432
+# 数据库用户名；留空时尝试自动识别
 SUB2TEST_DB_USER=
+# 数据库密码；留空时尝试自动识别
 SUB2TEST_DB_PASSWORD=
+# 数据库名；留空时尝试自动识别
 SUB2TEST_DB_NAME=
+# 数据库 SSL 模式，常见值：disable / require
 SUB2TEST_DB_SSLMODE=disable
+# 数据库容器名；设置后优先通过 docker exec + psql 查库
 SUB2TEST_DB_CONTAINER=
+# 管理端 API 基础地址，例如 http://127.0.0.1:38080/api/v1
 SUB2TEST_API_BASE_URL=
+# 管理端 x-api-key，用于调用 /admin/accounts/{id}/test
 SUB2TEST_ADMIN_API_KEY=
+# 是否启用 systemd 定时任务：true / false
 SUB2TEST_ENABLED=false
+# 定时频率：hourly / daily / weekly
 SUB2TEST_SCHEDULE=daily
+# 每批并发测试的账号数
 SUB2TEST_CONCURRENCY=3
+# 单个账号测试接口超时时间（秒）
 SUB2TEST_TIMEOUT_SECONDS=30
+# 批次之间最小暂停秒数
 SUB2TEST_SLEEP_MIN_SECONDS=3
+# 批次之间最大暂停秒数
 SUB2TEST_SLEEP_MAX_SECONDS=10
 EOF
 
@@ -402,6 +420,8 @@ preflight_runtime() {
     printf '%s\n' "$columns" | grep -qx 'status' || { echo "accounts table columns missing: status" >&2; exit 1; }
     printf '%s\n' "$columns" | grep -qx 'platform' || { echo "accounts table columns missing: platform" >&2; exit 1; }
     printf '%s\n' "$columns" | grep -qx 'type' || { echo "accounts table columns missing: type" >&2; exit 1; }
+    printf '%s\n' "$columns" | grep -qx 'rate_limit_reset_at' || { echo "accounts table columns missing: rate_limit_reset_at" >&2; exit 1; }
+    printf '%s\n' "$columns" | grep -qx 'temp_unschedulable_until' || { echo "accounts table columns missing: temp_unschedulable_until" >&2; exit 1; }
     echo "preflight checks passed"
     return 0
   fi
@@ -439,7 +459,7 @@ cur.execute(
     """
 )
 columns = {row[0] for row in cur.fetchall()}
-required_columns = {'deleted_at', 'status', 'platform', 'type'}
+required_columns = {'deleted_at', 'status', 'platform', 'type', 'rate_limit_reset_at', 'temp_unschedulable_until'}
 missing_columns = sorted(required_columns - columns)
 if missing_columns:
     print('accounts table columns missing: ' + ', '.join(missing_columns), file=sys.stderr)
@@ -462,7 +482,7 @@ run_health_check() {
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, status, COALESCE(credentials::text, '{}'), COALESCE(extra::text, '{}') FROM accounts WHERE deleted_at IS NULL AND status IN ('error', 'active') ORDER BY CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC" > "$accounts_tsv"
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, status FROM accounts WHERE deleted_at IS NULL AND (status = 'error' OR (status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))) ORDER BY CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC" > "$accounts_tsv"
     python3 - "$accounts_tsv" "$accounts_json" <<'PY_EXPORT_CONTAINER_ACCOUNTS'
 import json
 import sys
@@ -475,26 +495,16 @@ with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', enco
         line = raw_line.rstrip('\n')
         if not line:
             continue
-        parts = line.split('\t', 6)
-        if len(parts) != 7:
+        parts = line.split('\t', 4)
+        if len(parts) != 5:
             continue
-        account_id, name, platform, account_type, status, credentials_text, extra_text = parts
-        try:
-            credentials = json.loads(credentials_text) if credentials_text else {}
-        except Exception:
-            credentials = {}
-        try:
-            extra = json.loads(extra_text) if extra_text else {}
-        except Exception:
-            extra = {}
+        account_id, name, platform, account_type, status = parts
         out.write(json.dumps({
             'id': int(account_id),
             'name': name,
             'platform': platform,
             'type': account_type,
             'status': status,
-            'credentials': credentials,
-            'extra': extra,
         }, ensure_ascii=False) + '\n')
 PY_EXPORT_CONTAINER_ACCOUNTS
   else
@@ -518,9 +528,17 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 cur.execute(
     """
-    SELECT id, name, platform, type, status, credentials, extra
+    SELECT id, name, platform, type, status
     FROM accounts
-    WHERE deleted_at IS NULL AND status IN ('error', 'active')
+    WHERE deleted_at IS NULL
+      AND (
+        status = 'error'
+        OR (
+          status = 'active'
+          AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW())
+          AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())
+        )
+      )
     ORDER BY CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC
     """
 )
@@ -529,15 +547,13 @@ cur.close()
 conn.close()
 
 with open(output_path, 'w', encoding='utf-8') as fh:
-    for account_id, name, platform, account_type, status, credentials, extra in rows:
+    for account_id, name, platform, account_type, status in rows:
         fh.write(json.dumps({
             'id': account_id,
             'name': name or '',
             'platform': platform,
             'type': account_type,
             'status': status,
-            'credentials': credentials,
-            'extra': extra,
         }, ensure_ascii=False) + '\n')
 PY_EXPORT_ACCOUNTS
   fi
@@ -556,13 +572,6 @@ import requests
 
 def get_env(name: str, default: str = '') -> str:
     return (os.getenv(name, default) or '').strip()
-
-def summarize_credentials(credentials: dict) -> str:
-    if not isinstance(credentials, dict):
-        return 'credentials=none'
-    if credentials.get('email'):
-        return f"email={credentials['email']}"
-    return 'credentials=present'
 
 def shorten_detail(detail: str) -> str:
     detail = (detail or '').strip().replace('\\n', ' ')
@@ -642,7 +651,6 @@ def run_account_test(row):
     platform = row.get('platform', '')
     account_type = row.get('type', '')
     source_status = row.get('status', '')
-    credentials = as_dict(row.get('credentials'))
     started = time.time()
     result_text = ''
     saw_success = False
@@ -693,7 +701,6 @@ def run_account_test(row):
         'platform': platform,
         'account_type': account_type,
         'source_status': source_status,
-        'credentials': credentials,
         'saw_success': saw_success,
         'latency_ms': latency_ms,
         'native_status': native_status,
@@ -711,9 +718,8 @@ for batch_start in range(0, len(rows), batch_size):
         status_counts[item['native_status']] += 1
         result = 'success' if item['saw_success'] else 'failed'
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
-        summary = summarize_credentials(item['credentials'])
         try:
-            print(f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} {summary} detail={item['detail']}")
+            print(f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} detail={item['detail']}")
         except BrokenPipeError:
             pipe_closed = True
             break
@@ -772,23 +778,23 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 [ -f "$SUB2TEST_CONFIG_FILE" ] && . "$SUB2TEST_CONFIG_FILE"
 
 show_config() {
-  echo "SUB2TEST_DEPLOY_MODE=${SUB2TEST_DEPLOY_MODE:-compose}"
-  echo "SUB2TEST_COMPOSE_FILE=${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}"
-  echo "SUB2API_CONFIG_FILE=${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}"
-  echo "SUB2TEST_DB_HOST=${SUB2TEST_DB_HOST:-}"
-  echo "SUB2TEST_DB_PORT=${SUB2TEST_DB_PORT:-5432}"
-  echo "SUB2TEST_DB_USER=${SUB2TEST_DB_USER:-}"
-  echo "SUB2TEST_DB_NAME=${SUB2TEST_DB_NAME:-}"
-  echo "SUB2TEST_DB_SSLMODE=${SUB2TEST_DB_SSLMODE:-disable}"
-  echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}"
-  echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}"
-  echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}"
-  echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}"
-  echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}"
-  echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}"
-  echo "SUB2TEST_TIMEOUT_SECONDS=${SUB2TEST_TIMEOUT_SECONDS:-30}"
-  echo "SUB2TEST_SLEEP_MIN_SECONDS=${SUB2TEST_SLEEP_MIN_SECONDS:-3}"
-  echo "SUB2TEST_SLEEP_MAX_SECONDS=${SUB2TEST_SLEEP_MAX_SECONDS:-10}"
+  echo "SUB2TEST_DEPLOY_MODE=${SUB2TEST_DEPLOY_MODE:-compose}    # 运行模式：compose=自动识别数据库配置"
+  echo "SUB2TEST_COMPOSE_FILE=${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}    # docker-compose.yml 路径"
+  echo "SUB2API_CONFIG_FILE=${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}    # Sub2API config.yaml 路径"
+  echo "SUB2TEST_DB_HOST=${SUB2TEST_DB_HOST:-}    # 数据库主机"
+  echo "SUB2TEST_DB_PORT=${SUB2TEST_DB_PORT:-5432}    # 数据库端口"
+  echo "SUB2TEST_DB_USER=${SUB2TEST_DB_USER:-}    # 数据库用户名"
+  echo "SUB2TEST_DB_NAME=${SUB2TEST_DB_NAME:-}    # 数据库名"
+  echo "SUB2TEST_DB_SSLMODE=${SUB2TEST_DB_SSLMODE:-disable}    # 数据库 SSL 模式"
+  echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}    # 数据库容器名（设置后优先容器查库）"
+  echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}    # 管理端 API 基础地址"
+  echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}    # 管理端 API Key"
+  echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用定时任务"
+  echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}    # 定时频率：hourly / daily / weekly"
+  echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}    # 每批并发账号数"
+  echo "SUB2TEST_TIMEOUT_SECONDS=${SUB2TEST_TIMEOUT_SECONDS:-30}    # 单账号测试超时秒数"
+  echo "SUB2TEST_SLEEP_MIN_SECONDS=${SUB2TEST_SLEEP_MIN_SECONDS:-3}    # 批间最小暂停秒数"
+  echo "SUB2TEST_SLEEP_MAX_SECONDS=${SUB2TEST_SLEEP_MAX_SECONDS:-10}    # 批间最大暂停秒数"
 }
 
 edit_value() {
@@ -861,14 +867,14 @@ run_once() {
 menu() {
   while true; do
     echo
-    echo "sub2test menu"
-    echo "1) Enable automatic task"
-    echo "2) Disable automatic task"
-    echo "3) Edit parameters"
-    echo "4) Run once now"
-    echo "5) Show current config"
-    echo "6) Uninstall script and timer"
-    echo "7) Exit"
+    echo "sub2test 菜单"
+    echo "1) 启用自动任务"
+    echo "2) 禁用自动任务"
+    echo "3) 编辑参数"
+    echo "4) 立即执行一次"
+    echo "5) 查看当前配置"
+    echo "6) 卸载脚本和定时器"
+    echo "7) 退出"
     read -r -p "> " choice
     case "$choice" in
       1) enable_task ;;
@@ -878,7 +884,7 @@ menu() {
       5) show_config ;;
       6) uninstall_self; exit 0 ;;
       7) exit 0 ;;
-      *) echo "Unknown choice" ;;
+      *) echo "无效选项" ;;
     esac
   done
 }
