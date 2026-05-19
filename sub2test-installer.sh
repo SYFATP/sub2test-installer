@@ -723,9 +723,15 @@ for batch_start in range(0, len(rows), batch_size):
 
     if batch_start + batch_size < len(rows):
         if sleep_max <= sleep_min:
-            time.sleep(max(sleep_min, 0))
+            sleep_seconds = max(sleep_min, 0)
         else:
-            time.sleep(random.randint(max(sleep_min, 0), max(sleep_max, sleep_min)))
+            sleep_seconds = random.randint(max(sleep_min, 0), max(sleep_max, sleep_min))
+        try:
+            print(f"sleep {sleep_seconds}s before next batch")
+        except BrokenPipeError:
+            pipe_closed = True
+            break
+        time.sleep(sleep_seconds)
 
 if not pipe_closed:
     try:
