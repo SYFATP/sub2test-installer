@@ -617,10 +617,26 @@ def shorten_detail(detail: str) -> str:
 
 
 def safe_exception_text(exc: Exception) -> str:
+    parts = [exc.__class__.__name__]
+    for attr in ('reason', 'object', 'encoding', 'start', 'end'):
+        if not hasattr(exc, attr):
+            continue
+        try:
+            value = getattr(exc, attr)
+        except Exception:
+            continue
+        if value in (None, ''):
+            continue
+        if attr == 'object':
+            value = type(value).__name__
+        parts.append(f"{attr}={value!r}")
     try:
-        return shorten_detail(str(exc))
+        text = str(exc)
     except Exception:
-        return shorten_detail(repr(exc))
+        text = repr(exc)
+    if text:
+        parts.append(text)
+    return shorten_detail(' | '.join(str(part) for part in parts if part))
 
 
 def response_error_detail(response):
@@ -731,22 +747,26 @@ def run_account_test(row):
             if response.status_code != 200:
                 error_text = response_error_detail(response)
             else:
-                for chunk in parse_sse_events(response):
-                    try:
-                        event = json.loads(chunk)
-                    except Exception:
-                        continue
-                    event_type = (event.get('type') or '').strip()
-                    if event_type == 'content' and event.get('text'):
-                        result_text += event.get('text') or ''
-                    elif event_type == 'test_complete':
-                        saw_success = bool(event.get('success'))
-                        if not saw_success:
+                content_type = (response.headers.get('Content-Type') or '').lower()
+                if 'text/event-stream' not in content_type:
+                    error_text = f"unexpected content-type: {content_type or 'missing'}"
+                else:
+                    for chunk in parse_sse_events(response):
+                        try:
+                            event = json.loads(chunk)
+                        except Exception:
+                            continue
+                        event_type = (event.get('type') or '').strip()
+                        if event_type == 'content' and event.get('text'):
+                            result_text += event.get('text') or ''
+                        elif event_type == 'test_complete':
+                            saw_success = bool(event.get('success'))
+                            if not saw_success:
+                                error_text = shorten_detail((event.get('error') or '').strip())
+                        elif event_type == 'error':
                             error_text = shorten_detail((event.get('error') or '').strip())
-                    elif event_type == 'error':
-                        error_text = shorten_detail((event.get('error') or '').strip())
-                if not saw_success and not error_text:
-                    error_text = shorten_detail(result_text) or 'test did not complete successfully'
+                    if not saw_success and not error_text:
+                        error_text = shorten_detail(result_text) or 'test did not complete successfully'
     except Exception as exc:
         error_text = safe_exception_text(exc)
 
