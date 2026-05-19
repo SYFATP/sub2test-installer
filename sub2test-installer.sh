@@ -661,6 +661,38 @@ def response_content_type(response) -> str:
     return ''
 
 
+def request_exception_debug(exc: Exception) -> str:
+    parts = [safe_exception_text(exc)]
+    request = getattr(exc, 'request', None)
+    if request is not None:
+        try:
+            parts.append(f"request_url={getattr(request, 'url', '')}")
+        except Exception:
+            pass
+        try:
+            parts.append(f"request_method={getattr(request, 'method', '')}")
+        except Exception:
+            pass
+        try:
+            headers = getattr(request, 'headers', None)
+            if headers is not None:
+                header_keys = ','.join(sorted(str(k) for k in headers.keys()))
+                parts.append(f"request_headers={header_keys}")
+        except Exception:
+            pass
+    response = getattr(exc, 'response', None)
+    if response is not None:
+        try:
+            parts.append(f"response_status={getattr(response, 'status_code', '')}")
+        except Exception:
+            pass
+        try:
+            parts.append(f"response_content_type={response_content_type(response)}")
+        except Exception:
+            pass
+    return shorten_detail(' | '.join(part for part in parts if part))
+
+
 def response_error_detail(response):
     try:
         body = response.content.decode('utf-8', errors='replace').strip()
@@ -790,7 +822,7 @@ def run_account_test(row):
                     if not saw_success and not error_text:
                         error_text = shorten_detail(result_text) or 'test did not complete successfully'
     except Exception as exc:
-        error_text = safe_exception_text(exc)
+        error_text = request_exception_debug(exc)
 
     latency_ms = int((time.time() - started) * 1000)
     native_status = classify_api_result(http_status, saw_success)
