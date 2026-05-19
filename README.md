@@ -9,31 +9,41 @@
 
 `sub2test-installer.sh` 用来给 Sub2API 部署一套独立的 `sub2test` 运行环境：自动发现数据库配置、调用管理端账号测活接口、把连续 `error` 的账号在达到阈值后自动设为 `disabled`，并可通过 systemd timer 定时执行。
 
-### 功能概览
-
-- 自动从 `docker-compose.yml` 或 `config.yaml` 推断数据库连接信息
-- 调用管理端 `/admin/accounts/{id}/test` 做账号测活
-- 本地持久化连续 `error` 次数到状态文件
-- 达到阈值后调用管理端 `/admin/accounts/{id}` 把账号置为 `disabled`
-- 支持固定每天某个时间执行
-- 支持每隔 N 小时执行一次
-- 保留旧的 `hourly / daily / weekly` 调度兼容方式
-
-### 安装
+### 30 秒快速开始
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
 chmod +x /tmp/sub2test-installer.sh
 sudo bash /tmp/sub2test-installer.sh --force
+sudo sub2test show-config
 ```
 
-安装完成后会生成：
+安装后会生成：
 
 - 配置文件：`/etc/sub2api/sub2test.env`
-- 脚本目录：`/opt/sub2test`
+- 状态文件：`/opt/sub2test/state.json`
 - 命令入口：`/usr/local/bin/sub2test`
-- systemd service：`/etc/systemd/system/sub2test.service`
-- systemd timer：`/etc/systemd/system/sub2test.timer`
+- timer：`/etc/systemd/system/sub2test.timer`
+
+### 常用调度示例
+
+#### 每天 00:00 执行
+
+```bash
+sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=00:00/' /etc/sub2api/sub2test.env
+sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=/' /etc/sub2api/sub2test.env
+sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
+sudo sub2test enable
+```
+
+#### 每 6 小时执行一次
+
+```bash
+sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=/' /etc/sub2api/sub2test.env
+sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=6/' /etc/sub2api/sub2test.env
+sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
+sudo sub2test enable
+```
 
 ### 常用命令
 
@@ -45,7 +55,17 @@ sudo sub2test disable
 sudo sub2test menu
 ```
 
-### 关键配置
+### 功能概览
+
+- 自动从 `docker-compose.yml` 或 `config.yaml` 推断数据库连接信息
+- 调用管理端 `/admin/accounts/{id}/test` 做账号测活
+- 本地持久化连续 `error` 次数到状态文件
+- 达到阈值后调用管理端 `/admin/accounts/{id}` 把账号置为 `disabled`
+- 支持固定每天某个时间执行
+- 支持每隔 N 小时执行一次
+- 保留旧的 `hourly / daily / weekly` 调度兼容方式
+
+### 完整配置说明
 
 配置文件路径：`/etc/sub2api/sub2test.env`
 
@@ -110,64 +130,13 @@ SUB2TEST_SCHEDULE=daily
 2. `SUB2TEST_EVERY_HOURS`
 3. `SUB2TEST_SCHEDULE`
 
-### 启用定时任务
+### 查看和排障
 
-修改好配置后执行：
-
-```bash
-sudo sub2test enable
-```
-
-查看定时器状态：
+#### 查看 timer 状态
 
 ```bash
 systemctl status sub2test.timer --no-pager
 systemctl list-timers --all | grep sub2test
-```
-
-### 状态文件
-
-默认状态文件：
-
-```bash
-/opt/sub2test/state.json
-```
-
-主要用于记录：
-
-- 每个账号的 `consecutive_error_count`
-- 最近一次 `last_native_status`
-- 是否已经由脚本触发过停用 `disabled_by_sub2test_at`
-
-查看：
-
-```bash
-cat /opt/sub2test/state.json
-```
-
-### 工作机制
-
-- `sub2test.timer` 负责按 systemd 时间规则触发
-- `sub2test.service` 负责执行一次 `sub2test run-once`
-- 脚本不是常驻业务进程，只在触发时运行，跑完退出
-
-### 验证建议
-
-#### 手动执行一次
-
-```bash
-sudo sub2test run-once
-```
-
-#### 查看配置
-
-```bash
-sudo sub2test show-config
-```
-
-#### 查看 timer 实际生效规则
-
-```bash
 sudo systemctl cat sub2test.timer
 ```
 
@@ -178,25 +147,17 @@ systemctl status sub2test.service --no-pager
 journalctl -u sub2test.service -n 100 --no-pager
 ```
 
-### 示例
-
-#### 每天 00:00 执行
+#### 查看状态文件
 
 ```bash
-sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=00:00/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
-sudo sub2test enable
+cat /opt/sub2test/state.json
 ```
 
-#### 每 6 小时执行一次
+### 工作机制
 
-```bash
-sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=6/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
-sudo sub2test enable
-```
+- `sub2test.timer` 负责按 systemd 时间规则触发
+- `sub2test.service` 负责执行一次 `sub2test run-once`
+- 脚本不是常驻业务进程，只在触发时运行，跑完退出
 
 ### 注意事项
 
@@ -210,31 +171,41 @@ sudo sub2test enable
 
 `sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
 
-### Features
-
-- Auto-detect database settings from `docker-compose.yml` or `config.yaml`
-- Call `/admin/accounts/{id}/test` for account health checks
-- Persist consecutive `error` counts in a local state file
-- Disable accounts through `/admin/accounts/{id}` after reaching the threshold
-- Support fixed daily execution time
-- Support execution every N hours
-- Keep backward compatibility with legacy `hourly / daily / weekly` scheduling
-
-### Installation
+### Quick start in 30 seconds
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
 chmod +x /tmp/sub2test-installer.sh
 sudo bash /tmp/sub2test-installer.sh --force
+sudo sub2test show-config
 ```
 
-The installer creates:
+After installation, you get:
 
 - Config file: `/etc/sub2api/sub2test.env`
-- Script directory: `/opt/sub2test`
+- State file: `/opt/sub2test/state.json`
 - Command entry: `/usr/local/bin/sub2test`
-- systemd service: `/etc/systemd/system/sub2test.service`
-- systemd timer: `/etc/systemd/system/sub2test.timer`
+- Timer: `/etc/systemd/system/sub2test.timer`
+
+### Common scheduling examples
+
+#### Run every day at 00:00
+
+```bash
+sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=00:00/' /etc/sub2api/sub2test.env
+sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=/' /etc/sub2api/sub2test.env
+sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
+sudo sub2test enable
+```
+
+#### Run every 6 hours
+
+```bash
+sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=/' /etc/sub2api/sub2test.env
+sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=6/' /etc/sub2api/sub2test.env
+sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
+sudo sub2test enable
+```
 
 ### Common commands
 
@@ -246,7 +217,17 @@ sudo sub2test disable
 sudo sub2test menu
 ```
 
-### Key configuration
+### Features
+
+- Auto-detect database settings from `docker-compose.yml` or `config.yaml`
+- Call `/admin/accounts/{id}/test` for account health checks
+- Persist consecutive `error` counts in a local state file
+- Disable accounts through `/admin/accounts/{id}` after reaching the threshold
+- Support fixed daily execution time
+- Support execution every N hours
+- Keep backward compatibility with legacy `hourly / daily / weekly` scheduling
+
+### Full configuration reference
 
 Config file path: `/etc/sub2api/sub2test.env`
 
@@ -311,36 +292,24 @@ Priority order:
 2. `SUB2TEST_EVERY_HOURS`
 3. `SUB2TEST_SCHEDULE`
 
-### Enable the timer
+### Inspection and troubleshooting
 
-After updating the config, run:
-
-```bash
-sudo sub2test enable
-```
-
-Check timer status:
+#### Check timer status
 
 ```bash
 systemctl status sub2test.timer --no-pager
 systemctl list-timers --all | grep sub2test
+sudo systemctl cat sub2test.timer
 ```
 
-### State file
-
-Default state file:
+#### Check execution logs
 
 ```bash
-/opt/sub2test/state.json
+systemctl status sub2test.service --no-pager
+journalctl -u sub2test.service -n 100 --no-pager
 ```
 
-It mainly stores:
-
-- `consecutive_error_count` for each account
-- last observed `last_native_status`
-- `disabled_by_sub2test_at` once the script has disabled the account
-
-View it with:
+#### Check the state file
 
 ```bash
 cat /opt/sub2test/state.json
@@ -351,53 +320,6 @@ cat /opt/sub2test/state.json
 - `sub2test.timer` handles time-based triggering via systemd
 - `sub2test.service` runs one `sub2test run-once` execution
 - The script is not a long-running business process; it starts on trigger and exits when done
-
-### Validation
-
-#### Run once manually
-
-```bash
-sudo sub2test run-once
-```
-
-#### Show current config
-
-```bash
-sudo sub2test show-config
-```
-
-#### Inspect the effective timer
-
-```bash
-sudo systemctl cat sub2test.timer
-```
-
-#### Inspect execution logs
-
-```bash
-systemctl status sub2test.service --no-pager
-journalctl -u sub2test.service -n 100 --no-pager
-```
-
-### Examples
-
-#### Run every day at 00:00
-
-```bash
-sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=00:00/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
-sudo sub2test enable
-```
-
-#### Run every 6 hours
-
-```bash
-sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=6/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
-sudo sub2test enable
-```
 
 ### Notes
 
