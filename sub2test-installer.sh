@@ -607,6 +607,16 @@ def shorten_detail(detail: str) -> str:
     detail = ' '.join(detail.split())
     return detail[:180]
 
+
+def response_error_detail(response):
+    try:
+        body = response.content.decode('utf-8', errors='replace').strip()
+    except Exception:
+        body = ''
+    if body:
+        return shorten_detail(body)
+    return shorten_detail(response.reason or f'HTTP {response.status_code}')
+
 sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
 sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
 timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
@@ -701,7 +711,7 @@ def run_account_test(row):
             )
             http_status = response.status_code
             if response.status_code != 200:
-                error_text = shorten_detail(response.text or response.reason or f'HTTP {response.status_code}')
+                error_text = response_error_detail(response)
             else:
                 for chunk in parse_sse_events(response):
                     try:
