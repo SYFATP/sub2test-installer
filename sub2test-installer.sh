@@ -293,6 +293,9 @@ def load_dotenv(env_path: Path):
 def parse_compose(path: Path):
     text = path.read_text(encoding='utf-8')
     env_file_values = {}
+    default_env_path = path.parent / '.env'
+    if default_env_path.exists():
+        env_file_values.update(load_dotenv(default_env_path))
 
     env_file_match = re.search(r'^\s*env_file:\s*([^\n#]+)$', text, re.MULTILINE)
     if env_file_match:
