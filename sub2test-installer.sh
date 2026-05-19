@@ -162,8 +162,14 @@ SUB2TEST_ERROR_STREAK_THRESHOLD={keep("SUB2TEST_ERROR_STREAK_THRESHOLD", "3")}
 SUB2TEST_STATE_FILE={keep("SUB2TEST_STATE_FILE", "/opt/sub2test/state.json")}
 # 是否启用 systemd 定时任务：true / false
 SUB2TEST_ENABLED={keep("SUB2TEST_ENABLED", "false")}
-# 定时频率：hourly / daily / weekly
+# 兼容旧配置：hourly / daily / weekly
 SUB2TEST_SCHEDULE={keep("SUB2TEST_SCHEDULE", "daily")}
+# 每天执行时间，格式 HH:MM；设置后优先于 SUB2TEST_SCHEDULE
+SUB2TEST_DAILY_AT={keep("SUB2TEST_DAILY_AT", "")}
+# 每隔几小时执行一次（1-23）；设置后优先于 SUB2TEST_SCHEDULE
+SUB2TEST_EVERY_HOURS={keep("SUB2TEST_EVERY_HOURS", "")}
+# systemd RandomizedDelaySec，默认 120；如需精确时间可设为 0
+SUB2TEST_RANDOMIZED_DELAY_SECONDS={keep("SUB2TEST_RANDOMIZED_DELAY_SECONDS", "120")}
 # 每批并发测试的账号数
 SUB2TEST_CONCURRENCY={keep("SUB2TEST_CONCURRENCY", "3")}
 # 单个账号测试接口超时时间（秒）
@@ -232,12 +238,63 @@ PY_SAVE_CONFIG
 }
 
 systemd_calendar() {
+  local daily_at="${SUB2TEST_DAILY_AT:-}"
+  local every_hours="${SUB2TEST_EVERY_HOURS:-}"
+
+  if [ -n "$daily_at" ]; then
+    python3 - "$daily_at" <<'PY_DAILY_AT'
+import re
+import sys
+value = (sys.argv[1] or '').strip()
+match = re.fullmatch(r'([01]?\d|2[0-3]):([0-5]\d)', value)
+if not match:
+    print('SUB2TEST_DAILY_AT must use HH:MM (00:00-23:59)', file=sys.stderr)
+    sys.exit(1)
+hour, minute = match.groups()
+print(f"*-*-* {int(hour):02d}:{int(minute):02d}:00")
+PY_DAILY_AT
+    return 0
+  fi
+
+  if [ -n "$every_hours" ]; then
+    python3 - "$every_hours" <<'PY_EVERY_HOURS'
+import sys
+value = (sys.argv[1] or '').strip()
+try:
+    hours = int(value)
+except Exception:
+    print('SUB2TEST_EVERY_HOURS must be an integer between 1 and 23', file=sys.stderr)
+    sys.exit(1)
+if hours < 1 or hours > 23:
+    print('SUB2TEST_EVERY_HOURS must be between 1 and 23', file=sys.stderr)
+    sys.exit(1)
+print(f"*-*-* 0/{hours}:00:00")
+PY_EVERY_HOURS
+    return 0
+  fi
+
   case "${SUB2TEST_SCHEDULE:-daily}" in
     hourly) echo "hourly" ;;
     daily) echo "daily" ;;
     weekly) echo "weekly" ;;
     *) echo "daily" ;;
   esac
+}
+
+systemd_randomized_delay() {
+  python3 - "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" <<'PY_RANDOM_DELAY'
+import sys
+value = (sys.argv[1] or '').strip()
+try:
+    seconds = int(value)
+except Exception:
+    print('SUB2TEST_RANDOMIZED_DELAY_SECONDS must be a non-negative integer', file=sys.stderr)
+    sys.exit(1)
+if seconds < 0:
+    print('SUB2TEST_RANDOMIZED_DELAY_SECONDS must be >= 0', file=sys.stderr)
+    sys.exit(1)
+print(seconds)
+PY_RANDOM_DELAY
 }
 
 render_timer() {
@@ -248,7 +305,7 @@ Description=Run sub2test periodically
 [Timer]
 OnCalendar=$(systemd_calendar)
 Persistent=true
-RandomizedDelaySec=120
+RandomizedDelaySec=$(systemd_randomized_delay)
 Unit=sub2test.service
 
 [Install]
@@ -1042,7 +1099,10 @@ show_config() {
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
   echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用定时任务"
-  echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}    # 定时频率：hourly / daily / weekly"
+  echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}    # 兼容旧定时频率"
+  echo "SUB2TEST_DAILY_AT=${SUB2TEST_DAILY_AT:-}    # 每天执行时间，格式 HH:MM"
+  echo "SUB2TEST_EVERY_HOURS=${SUB2TEST_EVERY_HOURS:-}    # 每隔几小时执行一次"
+  echo "SUB2TEST_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}    # systemd 随机延迟秒数"
   echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}    # 每批并发账号数"
   echo "SUB2TEST_TIMEOUT_SECONDS=${SUB2TEST_TIMEOUT_SECONDS:-30}    # 单账号测试超时秒数"
   echo "SUB2TEST_SLEEP_MIN_SECONDS=${SUB2TEST_SLEEP_MIN_SECONDS:-3}    # 批间最小暂停秒数"
@@ -1090,6 +1150,9 @@ edit_config() {
   edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}"
   edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}"
   edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}"
+  edit_value SUB2TEST_DAILY_AT "${SUB2TEST_DAILY_AT:-}"
+  edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}"
+  edit_value SUB2TEST_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}"
   edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}"
   edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}"
   edit_value SUB2TEST_SLEEP_MIN_SECONDS "${SUB2TEST_SLEEP_MIN_SECONDS:-3}"
