@@ -156,6 +156,10 @@ SUB2TEST_DB_CONTAINER={keep("SUB2TEST_DB_CONTAINER", "")}
 SUB2TEST_API_BASE_URL={keep("SUB2TEST_API_BASE_URL", "")}
 # 管理端 x-api-key，用于调用 /admin/accounts/{{id}}/test
 SUB2TEST_ADMIN_API_KEY={keep("SUB2TEST_ADMIN_API_KEY", "")}
+# 连续 error 达到该次数后自动停用账号
+SUB2TEST_ERROR_STREAK_THRESHOLD={keep("SUB2TEST_ERROR_STREAK_THRESHOLD", "3")}
+# sub2test 本地状态文件路径
+SUB2TEST_STATE_FILE={keep("SUB2TEST_STATE_FILE", "/opt/sub2test/state.json")}
 # 是否启用 systemd 定时任务：true / false
 SUB2TEST_ENABLED={keep("SUB2TEST_ENABLED", "false")}
 # 定时频率：hourly / daily / weekly
@@ -432,12 +436,21 @@ preflight_api_config() {
     echo "SUB2TEST_ADMIN_API_KEY is required" >&2
     exit 1
   fi
+
+  python3 - <<'PY_PREFLIGHT_API'
+import os
+import sys
+
+value = os.getenv('SUB2TEST_ADMIN_API_KEY', '')
+if not value.isascii():
+    print('SUB2TEST_ADMIN_API_KEY must contain ASCII characters only', file=sys.stderr)
+    sys.exit(1)
+PY_PREFLIGHT_API
 }
 
 preflight_runtime() {
   require_python_module yaml python3-yaml
   require_python_module psycopg2 python3-psycopg2
-  require_python_module requests python3-requests
   preflight_config_source
   preflight_api_config
   eval "$(resolve_db_config)"
@@ -615,11 +628,11 @@ import random
 import signal
 import sys
 import time
-import traceback
 import urllib.error
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -661,100 +674,6 @@ def safe_exception_text(exc: Exception) -> str:
     return shorten_detail(' | '.join(str(part) for part in parts if part))
 
 
-def traceback_summary(exc: Exception) -> str:
-    try:
-        entries = traceback.extract_tb(exc.__traceback__)
-    except Exception:
-        return ''
-    if not entries:
-        return ''
-    tail = entries[-3:]
-    parts = [f"{entry.name}@{entry.lineno}" for entry in tail]
-    return shorten_detail(' > '.join(parts))
-
-
-def response_content_type(response) -> str:
-    try:
-        raw_headers = getattr(response.raw, 'headers', None)
-        if raw_headers is not None:
-            value = raw_headers.get('Content-Type')
-            if isinstance(value, bytes):
-                return value.decode('ascii', errors='ignore').lower()
-            if value:
-                return str(value).lower()
-    except Exception:
-        pass
-    try:
-        headers = getattr(response, 'headers', None)
-        if headers is not None:
-            value = headers.get('Content-Type')
-            if value:
-                return str(value).lower()
-    except Exception:
-        pass
-    return ''
-
-
-def request_exception_debug(exc: Exception) -> str:
-    parts = [safe_exception_text(exc)]
-    request = getattr(exc, 'request', None)
-    if request is not None:
-        try:
-            parts.append(f"request_url={getattr(request, 'url', '')}")
-        except Exception:
-            pass
-        try:
-            parts.append(f"request_method={getattr(request, 'method', '')}")
-        except Exception:
-            pass
-        try:
-            headers = getattr(request, 'headers', None)
-            if headers is not None:
-                header_keys = ','.join(sorted(str(k) for k in headers.keys()))
-                parts.append(f"request_headers={header_keys}")
-        except Exception:
-            pass
-    response = getattr(exc, 'response', None)
-    if response is not None:
-        try:
-            parts.append(f"response_status={getattr(response, 'status_code', '')}")
-        except Exception:
-            pass
-        try:
-            parts.append(f"response_content_type={response_content_type(response)}")
-        except Exception:
-            pass
-    return shorten_detail(' | '.join(part for part in parts if part))
-
-
-def trace_transport_probe(account_id, timeout_seconds):
-    try:
-        response = requests.post(
-            f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}/test",
-            headers={
-                'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
-                'Content-Type': 'application/json',
-                'Accept': 'text/event-stream',
-            },
-            json={},
-            timeout=timeout_seconds,
-            stream=True,
-        )
-        detail_parts = [
-            f"probe_status={response.status_code}",
-            f"probe_content_type={response_content_type(response) or 'missing'}",
-        ]
-        try:
-            body = response.content.decode('utf-8', errors='replace').strip()
-            if body:
-                detail_parts.append(f"probe_body={shorten_detail(body)}")
-        except Exception as probe_exc:
-            detail_parts.append(f"probe_body_error={safe_exception_text(probe_exc)}")
-        return shorten_detail(' | '.join(detail_parts))
-    except Exception as probe_exc:
-        return shorten_detail(f"probe_exception={request_exception_debug(probe_exc)}")
-
-
 def response_error_detail(status_code, body_bytes):
     try:
         body = body_bytes.decode('utf-8', errors='replace').strip() if body_bytes else ''
@@ -768,6 +687,8 @@ sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
 sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
 timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
 batch_size = max(int(get_env('SUB2TEST_CONCURRENCY', '3') or '3'), 1)
+error_streak_threshold = max(int(get_env('SUB2TEST_ERROR_STREAK_THRESHOLD', '3') or '3'), 1)
+state_file = Path(get_env('SUB2TEST_STATE_FILE', '/opt/sub2test/state.json') or '/opt/sub2test/state.json')
 rows_file = sys.argv[1]
 with open(rows_file, 'r', encoding='utf-8') as fh:
     rows = [json.loads(line) for line in fh if line.strip()]
@@ -778,6 +699,106 @@ if not rows:
 counts = Counter()
 status_counts = Counter()
 pipe_closed = False
+state_warning = ''
+
+
+def load_state(path: Path):
+    global state_warning
+    try:
+        if not path.exists():
+            return {'accounts': {}}
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        state_warning = f'state_load_warning={safe_exception_text(exc)}'
+        return {'accounts': {}}
+    if not isinstance(data, dict):
+        state_warning = 'state_load_warning=invalid state file root; resetting state'
+        return {'accounts': {}}
+    accounts = data.get('accounts')
+    if not isinstance(accounts, dict):
+        state_warning = 'state_load_warning=invalid accounts section; resetting state'
+        accounts = {}
+    return {'accounts': accounts}
+
+
+def save_state(path: Path, state: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + '.tmp')
+    tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    tmp_path.replace(path)
+
+
+def get_account_state(state: dict, account_id) -> dict:
+    key = str(account_id)
+    accounts = state.setdefault('accounts', {})
+    current = accounts.get(key)
+    if not isinstance(current, dict):
+        current = {}
+        accounts[key] = current
+    return current
+
+
+def normalize_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def should_disable_account(account_state: dict, native_status: str, threshold: int):
+    prior_streak = max(normalize_int(account_state.get('consecutive_error_count'), 0), 0)
+    streak_count = prior_streak
+    already_disabled = bool(account_state.get('disabled_by_sub2test_at'))
+
+    if native_status == 'success':
+        streak_count = 0
+    elif native_status == 'error':
+        streak_count = prior_streak + 1
+
+    disable_needed = native_status == 'error' and streak_count >= threshold and not already_disabled
+    return prior_streak, streak_count, disable_needed
+
+
+def apply_account_state(account_state: dict, native_status: str, streak_count: int, disable_success: bool):
+    account_state['consecutive_error_count'] = max(streak_count, 0)
+    account_state['last_native_status'] = native_status
+    if disable_success:
+        account_state['disabled_by_sub2test_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+def prune_state(state: dict, keep_ids):
+    accounts = state.get('accounts')
+    if not isinstance(accounts, dict):
+        return
+    keep_keys = {str(account_id) for account_id in keep_ids}
+    stale_keys = [key for key in accounts if key not in keep_keys]
+    for key in stale_keys:
+        accounts.pop(key, None)
+
+
+def disable_account(account_id: int):
+    body = json.dumps({'status': 'disabled'}).encode('utf-8')
+    req = urllib.request.Request(
+        f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}",
+        data=body,
+        headers={
+            'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        },
+        method='PUT',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+            return True, getattr(response, 'status', None) or response.getcode(), ''
+    except urllib.error.HTTPError as err:
+        return False, err.code, response_error_detail(err.code, err.read())
+    except Exception as exc:
+        return False, None, safe_exception_text(exc)
+
+
+state = load_state(state_file)
+processed_account_ids = set()
 
 
 def handle_sigpipe(signum, frame):
@@ -887,12 +908,22 @@ def run_account_test(row):
             error_text = response_error_detail(err.code, err.read())
     except Exception as exc:
         error_text = safe_exception_text(exc)
-        tb = traceback_summary(exc)
-        if tb:
-            error_text = shorten_detail(error_text + ' | traceback=' + tb)
 
     latency_ms = int((time.time() - started) * 1000)
     native_status = classify_api_result(http_status, saw_success)
+    account_state = get_account_state(state, account_id)
+    _, streak_count, disable_needed = should_disable_account(account_state, native_status, error_streak_threshold)
+    disable_attempted = False
+    disable_success = False
+    disable_detail = ''
+    disable_status = None
+
+    if disable_needed:
+        disable_attempted = True
+        disable_success, disable_status, disable_detail = disable_account(int(account_id))
+        if not disable_success:
+            disable_detail = shorten_detail(disable_detail or (f'HTTP {disable_status}' if disable_status else 'disable request failed'))
+
     return {
         'account_id': account_id,
         'name': name,
@@ -903,6 +934,11 @@ def run_account_test(row):
         'latency_ms': latency_ms,
         'native_status': native_status,
         'detail': shorten_detail(result_text if saw_success else error_text),
+        'streak_count': streak_count,
+        'disable_attempted': disable_attempted,
+        'disable_success': disable_success,
+        'disable_status': disable_status,
+        'disable_detail': disable_detail,
     }
 
 
@@ -914,10 +950,19 @@ for batch_start in range(0, len(rows), batch_size):
     for item in batch_results:
         counts['success' if item['saw_success'] else 'failed'] += 1
         status_counts[item['native_status']] += 1
+        processed_account_ids.add(item['account_id'])
+        account_state = get_account_state(state, item['account_id'])
+        apply_account_state(account_state, item['native_status'], item['streak_count'], item['disable_success'])
         result = 'success' if item['saw_success'] else 'failed'
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
-            print(f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} detail={item['detail']}")
+            message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} streak={item['streak_count']} detail={item['detail']}"
+            if item['disable_attempted']:
+                if item['disable_success']:
+                    message += ' disable=success'
+                else:
+                    message += f" disable=failed disable_detail={item['disable_detail']}"
+            print(message)
         except BrokenPipeError:
             pipe_closed = True
             break
@@ -938,7 +983,14 @@ for batch_start in range(0, len(rows), batch_size):
         time.sleep(sleep_seconds)
 
 if not pipe_closed:
+    prune_state(state, processed_account_ids)
     try:
+        save_state(state_file, state)
+    except Exception as exc:
+        print(f"state_save_warning={safe_exception_text(exc)}")
+    try:
+        if state_warning:
+            print(state_warning)
         print(f"summary success={counts['success']} failed={counts['failed']}")
         for key in ('success', 'error', 'rate_limited', 'failed'):
             if status_counts[key] > 0:
@@ -987,6 +1039,8 @@ show_config() {
   echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}    # 数据库容器名（设置后优先容器查库）"
   echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}    # 管理端 API 基础地址"
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}    # 管理端 API Key"
+  echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
+  echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
   echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用定时任务"
   echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}    # 定时频率：hourly / daily / weekly"
   echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}    # 每批并发账号数"
@@ -1033,6 +1087,8 @@ edit_config() {
   edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}"
   edit_value SUB2TEST_API_BASE_URL "${SUB2TEST_API_BASE_URL:-http://127.0.0.1:8080/api/v1}"
   edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}"
+  edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}"
+  edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}"
   edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}"
   edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}"
   edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}"
@@ -1057,7 +1113,7 @@ run_once() {
   . "$SUB2TEST_CONFIG_FILE"
   export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
   export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
-  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY
+  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_ERROR_STREAK_THRESHOLD SUB2TEST_STATE_FILE
   export SUB2TEST_SLEEP_MIN_SECONDS SUB2TEST_SLEEP_MAX_SECONDS
   run_health_check
 }
