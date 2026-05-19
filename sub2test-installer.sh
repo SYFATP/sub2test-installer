@@ -112,44 +112,65 @@ fi
 
 mkdir -p "$INSTALL_ROOT" "$CONFIG_DIR"
 
-cat > "$CONFIG_FILE" <<EOF
-# sub2test 运行模式：compose=优先从 docker-compose / config.yaml 自动推断数据库信息
-SUB2TEST_DEPLOY_MODE=compose
+  python3 - "$CONFIG_FILE" "$DEFAULT_COMPOSE_FILE" "$DEFAULT_APP_CONFIG_FILE" <<'PY_CONFIG'
+from pathlib import Path
+import sys
+
+config_path = Path(sys.argv[1])
+compose_file = sys.argv[2]
+app_config_file = sys.argv[3]
+existing = {}
+if config_path.exists():
+    for raw_line in config_path.read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        existing[key.strip()] = value
+
+def keep(key: str, default: str) -> str:
+    value = existing.get(key, default)
+    return '' if value is None else str(value)
+
+content = f'''# sub2test 运行模式：compose=优先从 docker-compose / config.yaml 自动推断数据库信息
+SUB2TEST_DEPLOY_MODE={keep("SUB2TEST_DEPLOY_MODE", "compose")}
 # Sub2API 的 docker-compose.yml 路径，用于自动识别数据库配置
-SUB2TEST_COMPOSE_FILE=$DEFAULT_COMPOSE_FILE
+SUB2TEST_COMPOSE_FILE={keep("SUB2TEST_COMPOSE_FILE", compose_file)}
 # Sub2API 的 config.yaml 路径，用于自动识别数据库配置
-SUB2API_CONFIG_FILE=$DEFAULT_APP_CONFIG_FILE
+SUB2API_CONFIG_FILE={keep("SUB2API_CONFIG_FILE", app_config_file)}
 # 数据库主机地址；留空时尝试自动识别
-SUB2TEST_DB_HOST=
+SUB2TEST_DB_HOST={keep("SUB2TEST_DB_HOST", "")}
 # 数据库端口
-SUB2TEST_DB_PORT=5432
+SUB2TEST_DB_PORT={keep("SUB2TEST_DB_PORT", "5432")}
 # 数据库用户名；留空时尝试自动识别
-SUB2TEST_DB_USER=
+SUB2TEST_DB_USER={keep("SUB2TEST_DB_USER", "")}
 # 数据库密码；留空时尝试自动识别
-SUB2TEST_DB_PASSWORD=
+SUB2TEST_DB_PASSWORD={keep("SUB2TEST_DB_PASSWORD", "")}
 # 数据库名；留空时尝试自动识别
-SUB2TEST_DB_NAME=
+SUB2TEST_DB_NAME={keep("SUB2TEST_DB_NAME", "")}
 # 数据库 SSL 模式，常见值：disable / require
-SUB2TEST_DB_SSLMODE=disable
+SUB2TEST_DB_SSLMODE={keep("SUB2TEST_DB_SSLMODE", "disable")}
 # 数据库容器名；设置后优先通过 docker exec + psql 查库
-SUB2TEST_DB_CONTAINER=
+SUB2TEST_DB_CONTAINER={keep("SUB2TEST_DB_CONTAINER", "")}
 # 管理端 API 基础地址，例如 http://127.0.0.1:38080/api/v1
-SUB2TEST_API_BASE_URL=
-# 管理端 x-api-key，用于调用 /admin/accounts/{id}/test
-SUB2TEST_ADMIN_API_KEY=
+SUB2TEST_API_BASE_URL={keep("SUB2TEST_API_BASE_URL", "")}
+# 管理端 x-api-key，用于调用 /admin/accounts/{{id}}/test
+SUB2TEST_ADMIN_API_KEY={keep("SUB2TEST_ADMIN_API_KEY", "")}
 # 是否启用 systemd 定时任务：true / false
-SUB2TEST_ENABLED=false
+SUB2TEST_ENABLED={keep("SUB2TEST_ENABLED", "false")}
 # 定时频率：hourly / daily / weekly
-SUB2TEST_SCHEDULE=daily
+SUB2TEST_SCHEDULE={keep("SUB2TEST_SCHEDULE", "daily")}
 # 每批并发测试的账号数
-SUB2TEST_CONCURRENCY=3
+SUB2TEST_CONCURRENCY={keep("SUB2TEST_CONCURRENCY", "3")}
 # 单个账号测试接口超时时间（秒）
-SUB2TEST_TIMEOUT_SECONDS=30
+SUB2TEST_TIMEOUT_SECONDS={keep("SUB2TEST_TIMEOUT_SECONDS", "30")}
 # 批次之间最小暂停秒数
-SUB2TEST_SLEEP_MIN_SECONDS=3
+SUB2TEST_SLEEP_MIN_SECONDS={keep("SUB2TEST_SLEEP_MIN_SECONDS", "3")}
 # 批次之间最大暂停秒数
-SUB2TEST_SLEEP_MAX_SECONDS=10
-EOF
+SUB2TEST_SLEEP_MAX_SECONDS={keep("SUB2TEST_SLEEP_MAX_SECONDS", "10")}
+'''
+config_path.write_text(content, encoding='utf-8')
+PY_CONFIG
 
 python3 - "$LIB_FILE" "$CONFIG_FILE" "$DEFAULT_COMPOSE_FILE" "$DEFAULT_APP_CONFIG_FILE" <<'PY'
 from pathlib import Path
@@ -594,10 +615,10 @@ import random
 import signal
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-
-import requests
 
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -721,14 +742,14 @@ def trace_transport_probe(account_id, timeout_seconds):
         return shorten_detail(f"probe_exception={request_exception_debug(probe_exc)}")
 
 
-def response_error_detail(response):
+def response_error_detail(status_code, body_bytes):
     try:
-        body = response.content.decode('utf-8', errors='replace').strip()
+        body = body_bytes.decode('utf-8', errors='replace').strip() if body_bytes else ''
     except Exception:
         body = ''
     if body:
         return shorten_detail(body)
-    return shorten_detail(response.reason or f'HTTP {response.status_code}')
+    return shorten_detail(f'HTTP {status_code}')
 
 sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
 sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
@@ -766,15 +787,10 @@ def as_dict(value):
     return {}
 
 
-def parse_sse_events(response):
+def parse_sse_events(lines):
     event_buffer = []
-    for raw_line in response.iter_lines(decode_unicode=False):
-        if raw_line is None:
-            continue
-        if isinstance(raw_line, bytes):
-            line = raw_line.decode('utf-8', errors='replace').strip()
-        else:
-            line = str(raw_line).strip()
+    for raw_line in lines:
+        line = raw_line.strip()
         if line == '':
             if event_buffer:
                 payload = '\n'.join(event_buffer).strip()
@@ -813,27 +829,31 @@ def run_account_test(row):
     error_text = ''
 
     try:
-        with requests.Session() as session:
-            response = session.post(
-                f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}/test",
-                headers={
-                    'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
-                    'Content-Type': 'application/json',
-                    'Accept': 'text/event-stream',
-                },
-                json={},
-                timeout=timeout_seconds,
-                stream=True,
-            )
-            http_status = response.status_code
-            if response.status_code != 200:
-                error_text = response_error_detail(response)
-            else:
-                content_type = response_content_type(response)
-                if 'text/event-stream' not in content_type:
+        body = json.dumps({}).encode('utf-8')
+        req = urllib.request.Request(
+            f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}/test",
+            data=body,
+            headers={
+                'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream',
+            },
+            method='POST',
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+                http_status = getattr(response, 'status', None) or response.getcode()
+                content_type = str(response.headers.get('Content-Type', '')).lower()
+                if http_status != 200:
+                    error_text = response_error_detail(http_status, response.read())
+                elif 'text/event-stream' not in content_type:
                     error_text = f"unexpected content-type: {content_type or 'missing'}"
                 else:
-                    for chunk in parse_sse_events(response):
+                    line_stream = (
+                        raw_line.decode('utf-8', errors='replace')
+                        for raw_line in response
+                    )
+                    for chunk in parse_sse_events(line_stream):
                         try:
                             event = json.loads(chunk)
                         except Exception:
@@ -849,10 +869,11 @@ def run_account_test(row):
                             error_text = shorten_detail((event.get('error') or '').strip())
                     if not saw_success and not error_text:
                         error_text = shorten_detail(result_text) or 'test did not complete successfully'
+        except urllib.error.HTTPError as err:
+            http_status = err.code
+            error_text = response_error_detail(err.code, err.read())
     except Exception as exc:
-        error_text = request_exception_debug(exc)
-        if 'UnicodeEncodeError' in error_text:
-            error_text = shorten_detail(error_text + ' | ' + trace_transport_probe(account_id, timeout_seconds))
+        error_text = safe_exception_text(exc)
 
     latency_ms = int((time.time() - started) * 1000)
     native_status = classify_api_result(http_status, saw_success)
