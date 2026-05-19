@@ -460,7 +460,39 @@ run_health_check() {
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -At -c "SELECT json_build_object('id', id, 'name', COALESCE(name, ''), 'platform', platform, 'type', type, 'credentials', credentials, 'extra', extra)::text FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_json"
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, COALESCE(credentials::text, '{}'), COALESCE(extra::text, '{}') FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" | \
+    python3 - "$accounts_json" <<'PY_EXPORT_CONTAINER_ACCOUNTS'
+import json
+import sys
+
+output_path = sys.argv[1]
+
+with open(output_path, 'w', encoding='utf-8') as out:
+    for raw_line in sys.stdin:
+        line = raw_line.rstrip('\n')
+        if not line:
+            continue
+        parts = line.split('\t', 5)
+        if len(parts) != 6:
+            continue
+        account_id, name, platform, account_type, credentials_text, extra_text = parts
+        try:
+            credentials = json.loads(credentials_text) if credentials_text else {}
+        except Exception:
+            credentials = {}
+        try:
+            extra = json.loads(extra_text) if extra_text else {}
+        except Exception:
+            extra = {}
+        out.write(json.dumps({
+            'id': int(account_id),
+            'name': name,
+            'platform': platform,
+            'type': account_type,
+            'credentials': credentials,
+            'extra': extra,
+        }, ensure_ascii=False) + '\n')
+PY_EXPORT_CONTAINER_ACCOUNTS
   else
     python3 - "$accounts_json" <<'PY_EXPORT_ACCOUNTS'
 import json
