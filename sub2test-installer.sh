@@ -454,21 +454,24 @@ run_health_check() {
   preflight_runtime
   local accounts_json
   accounts_json="$(mktemp)"
-  trap 'rm -f "$accounts_json"' RETURN
+  local accounts_tsv=""
+  trap 'rm -f "$accounts_json" "$accounts_tsv"' RETURN
 
   if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    accounts_tsv="$(mktemp)"
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, COALESCE(credentials::text, '{}'), COALESCE(extra::text, '{}') FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" | \
-    python3 - "$accounts_json" <<'PY_EXPORT_CONTAINER_ACCOUNTS'
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, COALESCE(credentials::text, '{}'), COALESCE(extra::text, '{}') FROM accounts WHERE deleted_at IS NULL AND status = 'active' ORDER BY priority ASC, id ASC" > "$accounts_tsv"
+    python3 - "$accounts_tsv" "$accounts_json" <<'PY_EXPORT_CONTAINER_ACCOUNTS'
 import json
 import sys
 
-output_path = sys.argv[1]
+input_path = sys.argv[1]
+output_path = sys.argv[2]
 
-with open(output_path, 'w', encoding='utf-8') as out:
-    for raw_line in sys.stdin:
+with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', encoding='utf-8') as out:
+    for raw_line in src:
         line = raw_line.rstrip('\n')
         if not line:
             continue
