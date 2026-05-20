@@ -976,7 +976,7 @@ def run_account_test(row):
                 if http_status != 200:
                     error_text = response_error_detail(http_status, raw_body.encode('utf-8'))
                 elif 'text/event-stream' in content_type:
-                    line_stream = (raw_line.decode('utf-8', errors='replace') for raw_line in raw_body.splitlines(True))
+                    line_stream = raw_body.splitlines()
                     for chunk in parse_sse_events(line_stream):
                         try:
                             event = json.loads(chunk)
