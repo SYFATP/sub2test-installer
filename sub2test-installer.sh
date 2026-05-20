@@ -897,14 +897,21 @@ def parse_sse_events(lines):
             yield payload
 
 
-def classify_api_result(http_status: int | None, saw_success: bool) -> str:
+def classify_error_text(http_status: int | None, text: str) -> str:
+    raw = shorten_detail(text).lower()
+    if http_status == 429 or any(keyword in raw for keyword in ('429', 'rate_limit', 'rate limit', 'too many request')):
+        return 'rate_limited'
+    if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'token invalid', 'login again', 'sign in again')):
+        return 'error'
+    if raw:
+        return 'unknown'
+    return 'unknown'
+
+
+def classify_api_result(http_status: int | None, saw_success: bool, error_text: str) -> str:
     if saw_success:
         return 'success'
-    if http_status == 429:
-        return 'rate_limited'
-    if http_status == 401:
-        return 'error'
-    return 'failed'
+    return classify_error_text(http_status, error_text)
 
 
 def run_account_test(row):
@@ -935,15 +942,11 @@ def run_account_test(row):
             with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
                 http_status = getattr(response, 'status', None) or response.getcode()
                 content_type = str(response.headers.get('Content-Type', '')).lower()
+                raw_body = response.read().decode('utf-8', errors='replace')
                 if http_status != 200:
-                    error_text = response_error_detail(http_status, response.read())
-                elif 'text/event-stream' not in content_type:
-                    error_text = f"unexpected content-type: {content_type or 'missing'}"
-                else:
-                    line_stream = (
-                        raw_line.decode('utf-8', errors='replace')
-                        for raw_line in response
-                    )
+                    error_text = response_error_detail(http_status, raw_body.encode('utf-8'))
+                elif 'text/event-stream' in content_type:
+                    line_stream = (raw_line.decode('utf-8', errors='replace') for raw_line in raw_body.splitlines(True))
                     for chunk in parse_sse_events(line_stream):
                         try:
                             event = json.loads(chunk)
@@ -960,6 +963,26 @@ def run_account_test(row):
                             error_text = shorten_detail((event.get('error') or '').strip())
                     if not saw_success and not error_text:
                         error_text = shorten_detail(result_text) or 'test did not complete successfully'
+                else:
+                    if 'text/plain' in content_type or 'application/json' in content_type or not content_type:
+                        try:
+                            payload = json.loads(raw_body)
+                        except Exception:
+                            payload = {}
+                        if isinstance(payload, dict):
+                            text = payload.get('message') or payload.get('error') or payload.get('detail') or payload.get('text') or raw_body
+                            result_text = result_text or shorten_detail(text)
+                            error_text = error_text or shorten_detail(text)
+                            if any(keyword in shorten_detail(text).lower() for keyword in ('success', 'ok', 'passed', 'done')):
+                                saw_success = True
+                            elif any(keyword in shorten_detail(text).lower() for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'rate limit', 'too many request')):
+                                error_text = shorten_detail(text)
+                        else:
+                            text = raw_body
+                            result_text = result_text or shorten_detail(text)
+                            error_text = error_text or shorten_detail(text)
+                    else:
+                        error_text = f"unexpected content-type: {content_type or 'missing'}"
         except urllib.error.HTTPError as err:
             http_status = err.code
             error_text = response_error_detail(err.code, err.read())
@@ -967,7 +990,7 @@ def run_account_test(row):
         error_text = safe_exception_text(exc)
 
     latency_ms = int((time.time() - started) * 1000)
-    native_status = classify_api_result(http_status, saw_success)
+    native_status = classify_api_result(http_status, saw_success, error_text)
     account_state = get_account_state(state, account_id)
     _, streak_count, disable_needed = should_disable_account(account_state, native_status, error_streak_threshold)
     disable_attempted = False
