@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-SUB2TEST_VERSION="0.1.1"
+SUB2TEST_VERSION="0.1.2"
+SUB2TEST_PROJECT_URL="https://github.com/SYFATP/sub2test-installer"
 INSTALL_ROOT="/opt/sub2test"
 CONFIG_DIR="/etc/sub2api"
 SYSTEMD_SERVICE="/etc/systemd/system/sub2test.service"
@@ -128,6 +129,16 @@ if config_path.exists():
         key, value = line.split('=', 1)
         existing[key.strip()] = value
 
+untested_every_minutes_default = '30'
+if existing.get('SUB2TEST_UNTESTED_EVERY_MINUTES', '').strip():
+    untested_every_minutes_default = existing['SUB2TEST_UNTESTED_EVERY_MINUTES'].strip()
+elif existing.get('SUB2TEST_UNTESTED_EVERY_30_MINUTES', 'false') == 'true':
+    untested_every_minutes_default = '30'
+else:
+    legacy_untested_hours = existing.get('SUB2TEST_UNTESTED_EVERY_HOURS', '').strip()
+    if legacy_untested_hours.isdigit():
+        untested_every_minutes_default = str(int(legacy_untested_hours) * 60)
+
 def keep(key: str, default: str) -> str:
     value = existing.get(key, default)
     return '' if value is None else str(value)
@@ -164,14 +175,8 @@ SUB2TEST_ERROR_STREAK_THRESHOLD={keep("SUB2TEST_ERROR_STREAK_THRESHOLD", "3")}
 SUB2TEST_STATE_FILE={keep("SUB2TEST_STATE_FILE", "/opt/sub2test/state.json")}
 # 是否启用未测试 active 账号独立定时任务：true / false
 SUB2TEST_UNTESTED_ENABLED={keep("SUB2TEST_UNTESTED_ENABLED", "false")}
-# 未测试 active 账号定时：兼容旧配置 hourly / daily / weekly
-SUB2TEST_UNTESTED_SCHEDULE={keep("SUB2TEST_UNTESTED_SCHEDULE", "daily")}
-# 未测试 active 账号每天执行时间，格式 HH:MM
-SUB2TEST_UNTESTED_DAILY_AT={keep("SUB2TEST_UNTESTED_DAILY_AT", "")}
-# 未测试 active 账号每隔几小时执行一次（1-23）
-SUB2TEST_UNTESTED_EVERY_HOURS={keep("SUB2TEST_UNTESTED_EVERY_HOURS", "")}
-# 未测试 active 账号每 30 分钟执行一次（true / false）；开启后优先于按小时配置
-SUB2TEST_UNTESTED_EVERY_30_MINUTES={keep("SUB2TEST_UNTESTED_EVERY_30_MINUTES", "false")}
+# 未测试 active 账号每隔多少分钟执行一次（5-720）
+SUB2TEST_UNTESTED_EVERY_MINUTES={keep("SUB2TEST_UNTESTED_EVERY_MINUTES", untested_every_minutes_default)}
 # 未测试 active 账号 systemd RandomizedDelaySec
 SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS={keep("SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS", "120")}
 # 是否启用 systemd 定时任务：true / false
@@ -322,6 +327,22 @@ print(seconds)
 PY_RANDOM_DELAY
 }
 
+systemd_minutes_calendar_for() {
+  python3 - "$1" <<'PY_EVERY_MINUTES'
+import sys
+value = (sys.argv[1] or '').strip()
+try:
+    minutes = int(value)
+except Exception:
+    print('untested every-minutes must be an integer between 5 and 720', file=sys.stderr)
+    sys.exit(1)
+if minutes < 5 or minutes > 720:
+    print('untested every-minutes must be between 5 and 720', file=sys.stderr)
+    sys.exit(1)
+print(minutes)
+PY_EVERY_MINUTES
+}
+
 systemd_randomized_delay() {
   systemd_randomized_delay_for "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}"
 }
@@ -348,7 +369,8 @@ render_untested_timer() {
 Description=Run sub2test for untested active accounts periodically
 
 [Timer]
-OnCalendar=$(systemd_calendar_for "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}")
+OnBootSec=2min
+OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}")min
 Persistent=true
 RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}")
 Unit=sub2test-untested.service
@@ -1287,6 +1309,8 @@ t() {
     en:enabled_daily_with_delay) echo "Enabled: runs every day at %s%s, plus a random delay up to %s seconds" ;;
     en:enabled_every_hours) echo "Enabled: runs every %s hours%s" ;;
     en:enabled_every_hours_with_delay) echo "Enabled: runs every %s hours%s, plus a random delay up to %s seconds" ;;
+    en:enabled_every_minutes) echo "Enabled: runs every %s minutes%s" ;;
+    en:enabled_every_minutes_with_delay) echo "Enabled: runs every %s minutes%s, plus a random delay up to %s seconds" ;;
     en:enabled_hourly) echo "Enabled: runs hourly%s" ;;
     en:enabled_weekly) echo "Enabled: runs weekly%s" ;;
     en:enabled_daily_fallback) echo "Enabled: runs daily%s" ;;
@@ -1298,7 +1322,29 @@ t() {
     en:menu_disable_full) echo "Disable full automatic task" ;;
     en:menu_enable_untested) echo "Enable untested automatic task" ;;
     en:menu_disable_untested) echo "Disable untested automatic task" ;;
-    en:menu_edit) echo "Edit settings" ;;
+    en:menu_edit) echo "Edit global parameters" ;;
+    en:menu_full_task) echo "Full task menu" ;;
+    en:menu_untested_task) echo "Untested task menu" ;;
+    en:menu_manual_run) echo "Manual run menu" ;;
+    en:menu_back) echo "Back" ;;
+    en:full_menu_title) echo "Full task menu" ;;
+    en:untested_menu_title) echo "Untested task menu" ;;
+    en:manual_menu_title) echo "Manual run menu" ;;
+    en:full_menu_config) echo "Edit full task config" ;;
+    en:full_menu_enable) echo "Enable full automatic task" ;;
+    en:full_menu_disable) echo "Disable full automatic task" ;;
+    en:full_menu_run_all) echo "Run once (all accounts)" ;;
+    en:full_menu_run_error) echo "Run once (error accounts only)" ;;
+    en:full_menu_run_disabled) echo "Run once (disabled accounts only)" ;;
+    en:full_menu_show_log) echo "Show last full-task log" ;;
+    en:untested_menu_config) echo "Edit untested task config" ;;
+    en:untested_menu_enable) echo "Enable untested automatic task" ;;
+    en:untested_menu_disable) echo "Disable untested automatic task" ;;
+    en:untested_menu_run) echo "Run once (untested active accounts only)" ;;
+    en:untested_menu_show_log) echo "Show last untested-task log" ;;
+    en:global_config_title) echo "Current global parameters:" ;;
+    en:full_config_title) echo "Current full task parameters:" ;;
+    en:untested_config_title) echo "Current untested task parameters:" ;;
     en:menu_run_all) echo "Run once (all)" ;;
     en:menu_run_error) echo "Run error accounts only" ;;
     en:menu_run_disabled) echo "Run disabled accounts only" ;;
@@ -1330,10 +1376,7 @@ t() {
     en:label_error_threshold) echo "Disable after this many consecutive errors" ;;
     en:label_state_file) echo "Local state file path" ;;
     en:label_untested_enabled) echo "Enable automatic task for untested accounts" ;;
-    en:label_untested_schedule) echo "Untested task legacy schedule (hourly/daily/weekly)" ;;
-    en:label_untested_daily_at) echo "Untested task daily run time (HH:MM, leave blank to disable)" ;;
-    en:label_untested_every_hours) echo "Untested task every N hours (1-23, leave blank to disable)" ;;
-    en:label_untested_every_30) echo "Run untested task every 30 minutes" ;;
+    en:label_untested_every_minutes) echo "Run untested task every N minutes (5-720)" ;;
     en:label_untested_delay) echo "Untested task random delay seconds" ;;
     en:label_full_schedule) echo "Full task legacy schedule (hourly/daily/weekly)" ;;
     en:label_full_daily_at) echo "Full task daily run time (HH:MM, leave blank to disable)" ;;
@@ -1356,6 +1399,8 @@ t() {
     zh:enabled_daily_with_delay) echo "已启用：每天 %s 自动执行一次%s，并额外随机延后 %s 秒" ;;
     zh:enabled_every_hours) echo "已启用：每 %s 小时自动执行一次%s" ;;
     zh:enabled_every_hours_with_delay) echo "已启用：每 %s 小时自动执行一次%s，并额外随机延后 %s 秒" ;;
+    zh:enabled_every_minutes) echo "已启用：每 %s 分钟自动执行一次%s" ;;
+    zh:enabled_every_minutes_with_delay) echo "已启用：每 %s 分钟自动执行一次%s，并额外随机延后 %s 秒" ;;
     zh:enabled_hourly) echo "已启用：每小时自动执行一次%s" ;;
     zh:enabled_weekly) echo "已启用：每周自动执行一次%s" ;;
     zh:enabled_daily_fallback) echo "已启用：每天自动执行一次%s" ;;
@@ -1367,7 +1412,29 @@ t() {
     zh:menu_disable_full) echo "禁用自动任务" ;;
     zh:menu_enable_untested) echo "启用未测试 active 账号自动任务" ;;
     zh:menu_disable_untested) echo "禁用未测试 active 账号自动任务" ;;
-    zh:menu_edit) echo "编辑参数" ;;
+    zh:menu_edit) echo "编辑全局参数" ;;
+    zh:menu_full_task) echo "全量任务菜单" ;;
+    zh:menu_untested_task) echo "未测任务菜单" ;;
+    zh:menu_manual_run) echo "手动执行菜单" ;;
+    zh:menu_back) echo "返回上一级" ;;
+    zh:full_menu_title) echo "全量任务菜单" ;;
+    zh:untested_menu_title) echo "未测任务菜单" ;;
+    zh:manual_menu_title) echo "手动执行菜单" ;;
+    zh:full_menu_config) echo "编辑全量任务配置" ;;
+    zh:full_menu_enable) echo "启用全量自动任务" ;;
+    zh:full_menu_disable) echo "禁用全量自动任务" ;;
+    zh:full_menu_run_all) echo "立即执行一次（全部账号）" ;;
+    zh:full_menu_run_error) echo "立即执行一次（仅 error 账号）" ;;
+    zh:full_menu_run_disabled) echo "立即执行一次（仅 disabled 账号）" ;;
+    zh:full_menu_show_log) echo "查看上次全量自动任务日志" ;;
+    zh:untested_menu_config) echo "编辑未测任务配置" ;;
+    zh:untested_menu_enable) echo "启用未测自动任务" ;;
+    zh:untested_menu_disable) echo "禁用未测自动任务" ;;
+    zh:untested_menu_run) echo "立即执行一次（仅未测 active 账号）" ;;
+    zh:untested_menu_show_log) echo "查看上次未测自动任务日志" ;;
+    zh:global_config_title) echo "当前全局参数：" ;;
+    zh:full_config_title) echo "当前全量任务参数：" ;;
+    zh:untested_config_title) echo "当前未测任务参数：" ;;
     zh:menu_run_all) echo "立即执行一次（全部）" ;;
     zh:menu_run_error) echo "仅测试 error 账号" ;;
     zh:menu_run_disabled) echo "仅测试 disabled 账号" ;;
@@ -1399,10 +1466,7 @@ t() {
     zh:label_error_threshold) echo "连续报错多少次后停用账号" ;;
     zh:label_state_file) echo "本地状态文件路径" ;;
     zh:label_untested_enabled) echo "是否启用未测账号自动任务" ;;
-    zh:label_untested_schedule) echo "未测任务兼容旧频率（hourly/daily/weekly）" ;;
-    zh:label_untested_daily_at) echo "未测任务每天几点执行（HH:MM，留空表示不用这个）" ;;
-    zh:label_untested_every_hours) echo "未测任务每隔几小时执行一次（1-23，留空表示不用这个）" ;;
-    zh:label_untested_every_30) echo "未测任务是否每 30 分钟执行一次" ;;
+    zh:label_untested_every_minutes) echo "未测任务每隔多少分钟执行一次（5-720）" ;;
     zh:label_untested_delay) echo "未测任务随机延迟秒数" ;;
     zh:label_full_schedule) echo "全量任务兼容旧频率（hourly/daily/weekly）" ;;
     zh:label_full_daily_at) echo "全量任务每天几点执行（HH:MM，留空表示不用这个）" ;;
@@ -1417,6 +1481,8 @@ t() {
 }
 
 show_config() {
+  echo "SUB2TEST_VERSION=$SUB2TEST_VERSION    # 当前脚本版本"
+  echo "SUB2TEST_PROJECT_URL=$SUB2TEST_PROJECT_URL    # 项目地址"
   echo "SUB2TEST_DEPLOY_MODE=${SUB2TEST_DEPLOY_MODE:-compose}    # 运行模式：compose=自动识别数据库配置"
   echo "SUB2TEST_COMPOSE_FILE=${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}    # docker-compose.yml 路径"
   echo "SUB2API_CONFIG_FILE=${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}    # Sub2API config.yaml 路径"
@@ -1431,10 +1497,7 @@ show_config() {
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
   echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}    # 是否启用未测试 active 账号定时任务"
-  echo "SUB2TEST_UNTESTED_SCHEDULE=${SUB2TEST_UNTESTED_SCHEDULE:-daily}    # 未测试 active 账号兼容旧定时频率"
-  echo "SUB2TEST_UNTESTED_DAILY_AT=${SUB2TEST_UNTESTED_DAILY_AT:-}    # 未测试 active 账号每天执行时间，格式 HH:MM"
-  echo "SUB2TEST_UNTESTED_EVERY_HOURS=${SUB2TEST_UNTESTED_EVERY_HOURS:-}    # 未测试 active 账号每隔几小时执行一次"
-  echo "SUB2TEST_UNTESTED_EVERY_30_MINUTES=${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}    # 未测试 active 账号每 30 分钟执行一次"
+  echo "SUB2TEST_UNTESTED_EVERY_MINUTES=${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}    # 未测试 active 账号每隔多少分钟执行一次"
   echo "SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}    # 未测试 active 账号 systemd 随机延迟秒数"
   echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用定时任务"
   echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}    # 兼容旧定时频率"
@@ -1445,6 +1508,43 @@ show_config() {
   echo "SUB2TEST_TIMEOUT_SECONDS=${SUB2TEST_TIMEOUT_SECONDS:-30}    # 单账号测试超时秒数"
   echo "SUB2TEST_SLEEP_MIN_SECONDS=${SUB2TEST_SLEEP_MIN_SECONDS:-3}    # 批间最小暂停秒数"
   echo "SUB2TEST_SLEEP_MAX_SECONDS=${SUB2TEST_SLEEP_MAX_SECONDS:-10}    # 批间最大暂停秒数"
+}
+
+show_global_config() {
+  echo "$(t global_config_title)"
+  echo "SUB2TEST_DEPLOY_MODE=${SUB2TEST_DEPLOY_MODE:-compose}"
+  echo "SUB2TEST_COMPOSE_FILE=${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}"
+  echo "SUB2API_CONFIG_FILE=${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}"
+  echo "SUB2TEST_DB_HOST=${SUB2TEST_DB_HOST:-}"
+  echo "SUB2TEST_DB_PORT=${SUB2TEST_DB_PORT:-5432}"
+  echo "SUB2TEST_DB_USER=${SUB2TEST_DB_USER:-}"
+  echo "SUB2TEST_DB_NAME=${SUB2TEST_DB_NAME:-}"
+  echo "SUB2TEST_DB_SSLMODE=${SUB2TEST_DB_SSLMODE:-disable}"
+  echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}"
+  echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}"
+  echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}"
+  echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}"
+  echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}"
+  echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}"
+  echo "SUB2TEST_TIMEOUT_SECONDS=${SUB2TEST_TIMEOUT_SECONDS:-30}"
+  echo "SUB2TEST_SLEEP_MIN_SECONDS=${SUB2TEST_SLEEP_MIN_SECONDS:-3}"
+  echo "SUB2TEST_SLEEP_MAX_SECONDS=${SUB2TEST_SLEEP_MAX_SECONDS:-10}"
+}
+
+show_full_task_config() {
+  echo "$(t full_config_title)"
+  echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}"
+  echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}"
+  echo "SUB2TEST_DAILY_AT=${SUB2TEST_DAILY_AT:-}"
+  echo "SUB2TEST_EVERY_HOURS=${SUB2TEST_EVERY_HOURS:-}"
+  echo "SUB2TEST_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}"
+}
+
+show_untested_task_config() {
+  echo "$(t untested_config_title)"
+  echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}"
+  echo "SUB2TEST_UNTESTED_EVERY_MINUTES=${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}"
+  echo "SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}"
 }
 
 schedule_summary() {
@@ -1501,6 +1601,34 @@ schedule_summary() {
   esac
 }
 
+untested_schedule_summary() {
+  local enabled="$1"
+  local every_minutes="$2"
+  local randomized_delay="$3"
+  local scope="$4"
+
+  if [ "$enabled" != "true" ]; then
+    t not_enabled
+    return 0
+  fi
+
+  local validated_minutes
+  if ! validated_minutes="$(systemd_minutes_calendar_for "$every_minutes" 2>/dev/null)"; then
+    if [ "${SUB2TEST_LANGUAGE:-zh}" = "en" ]; then
+      printf "Invalid untested interval%s" "$scope"
+    else
+      printf "未测任务分钟间隔配置无效%s" "$scope"
+    fi
+    return 0
+  fi
+
+  if [ -n "$randomized_delay" ] && [ "$randomized_delay" != "0" ]; then
+    printf "$(t enabled_every_minutes_with_delay)" "$validated_minutes" "$scope" "$randomized_delay"
+  else
+    printf "$(t enabled_every_minutes)" "$validated_minutes" "$scope"
+  fi
+}
+
 edit_value() {
   local key="$1"
   local current="$2"
@@ -1510,6 +1638,88 @@ edit_value() {
     save_config_value "$key" "$input"
     . "$SUB2TEST_CONFIG_FILE"
   fi
+}
+
+reload_timers_if_enabled() {
+  preflight_runtime
+  render_timer
+  render_untested_timer
+  systemctl daemon-reload
+  if systemctl is-enabled sub2test.timer >/dev/null 2>&1; then
+    systemctl restart sub2test.timer
+  fi
+  if systemctl is-enabled sub2test-untested.timer >/dev/null 2>&1; then
+    systemctl restart sub2test-untested.timer
+  fi
+  . "$SUB2TEST_CONFIG_FILE"
+}
+
+show_task_summaries() {
+  echo "$(t config_intro)"
+  echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
+  echo "- $(t untested_task)：$(untested_schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
+}
+
+edit_global_config() {
+  . "$SUB2TEST_CONFIG_FILE"
+  echo
+  show_global_config
+  echo
+  echo "$(t edit_intro)"
+  echo
+  edit_value SUB2TEST_DEPLOY_MODE "${SUB2TEST_DEPLOY_MODE:-compose}" "$(t label_deploy_mode)"
+  edit_value SUB2TEST_COMPOSE_FILE "${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}" "$(t label_compose_file)"
+  edit_value SUB2API_CONFIG_FILE "${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}" "$(t label_app_config_file)"
+  edit_value SUB2TEST_DB_HOST "${SUB2TEST_DB_HOST:-}" "$(t label_db_host)"
+  edit_value SUB2TEST_DB_PORT "${SUB2TEST_DB_PORT:-5432}" "$(t label_db_port)"
+  edit_value SUB2TEST_DB_USER "${SUB2TEST_DB_USER:-}" "$(t label_db_user)"
+  edit_value SUB2TEST_DB_PASSWORD "${SUB2TEST_DB_PASSWORD:-}" "$(t label_db_password)"
+  edit_value SUB2TEST_DB_NAME "${SUB2TEST_DB_NAME:-}" "$(t label_db_name)"
+  edit_value SUB2TEST_DB_SSLMODE "${SUB2TEST_DB_SSLMODE:-disable}" "$(t label_db_sslmode)"
+  edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}" "$(t label_db_container)"
+  edit_value SUB2TEST_API_BASE_URL "${SUB2TEST_API_BASE_URL:-http://127.0.0.1:8080/api/v1}" "$(t label_api_base_url)"
+  edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}" "$(t label_admin_api_key)"
+  edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "$(t label_error_threshold)"
+  edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}" "$(t label_state_file)"
+  edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}" "$(t label_concurrency)"
+  edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}" "$(t label_timeout)"
+  edit_value SUB2TEST_SLEEP_MIN_SECONDS "${SUB2TEST_SLEEP_MIN_SECONDS:-3}" "$(t label_sleep_min)"
+  edit_value SUB2TEST_SLEEP_MAX_SECONDS "${SUB2TEST_SLEEP_MAX_SECONDS:-10}" "$(t label_sleep_max)"
+  reload_timers_if_enabled
+  echo
+  show_global_config
+}
+
+edit_full_task_config() {
+  . "$SUB2TEST_CONFIG_FILE"
+  echo
+  show_full_task_config
+  echo
+  echo "$(t edit_intro)"
+  echo
+  edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}" "$(t label_full_schedule)"
+  edit_value SUB2TEST_DAILY_AT "${SUB2TEST_DAILY_AT:-}" "$(t label_full_daily_at)"
+  edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}" "$(t label_full_every_hours)"
+  edit_value SUB2TEST_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_full_delay)"
+  reload_timers_if_enabled
+  echo
+  show_full_task_config
+  echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
+}
+
+edit_untested_task_config() {
+  . "$SUB2TEST_CONFIG_FILE"
+  echo
+  show_untested_task_config
+  echo
+  echo "$(t edit_intro)"
+  echo
+  edit_value SUB2TEST_UNTESTED_EVERY_MINUTES "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "$(t label_untested_every_minutes)"
+  edit_value SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_untested_delay)"
+  reload_timers_if_enabled
+  echo
+  show_untested_task_config
+  echo "- $(t untested_task)：$(untested_schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
 }
 
 show_last_full_log() {
@@ -1588,58 +1798,84 @@ disable_untested_task() {
 }
 
 edit_config() {
-  . "$SUB2TEST_CONFIG_FILE"
-  echo
-  echo "$(t config_intro)"
-  echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
-  echo "- $(t untested_task)：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
-  echo
-  echo "$(t edit_intro)"
-  echo
-  edit_value SUB2TEST_LANGUAGE "${SUB2TEST_LANGUAGE:-zh}" "$(t label_language)"
-  edit_value SUB2TEST_DEPLOY_MODE "${SUB2TEST_DEPLOY_MODE:-compose}" "$(t label_deploy_mode)"
-  edit_value SUB2TEST_COMPOSE_FILE "${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}" "$(t label_compose_file)"
-  edit_value SUB2API_CONFIG_FILE "${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}" "$(t label_app_config_file)"
-  edit_value SUB2TEST_DB_HOST "${SUB2TEST_DB_HOST:-}" "$(t label_db_host)"
-  edit_value SUB2TEST_DB_PORT "${SUB2TEST_DB_PORT:-5432}" "$(t label_db_port)"
-  edit_value SUB2TEST_DB_USER "${SUB2TEST_DB_USER:-}" "$(t label_db_user)"
-  edit_value SUB2TEST_DB_PASSWORD "${SUB2TEST_DB_PASSWORD:-}" "$(t label_db_password)"
-  edit_value SUB2TEST_DB_NAME "${SUB2TEST_DB_NAME:-}" "$(t label_db_name)"
-  edit_value SUB2TEST_DB_SSLMODE "${SUB2TEST_DB_SSLMODE:-disable}" "$(t label_db_sslmode)"
-  edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}" "$(t label_db_container)"
-  edit_value SUB2TEST_API_BASE_URL "${SUB2TEST_API_BASE_URL:-http://127.0.0.1:8080/api/v1}" "$(t label_api_base_url)"
-  edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}" "$(t label_admin_api_key)"
-  edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "$(t label_error_threshold)"
-  edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}" "$(t label_state_file)"
-  edit_value SUB2TEST_UNTESTED_ENABLED "${SUB2TEST_UNTESTED_ENABLED:-false}" "$(t label_untested_enabled)"
-  edit_value SUB2TEST_UNTESTED_SCHEDULE "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "$(t label_untested_schedule)"
-  edit_value SUB2TEST_UNTESTED_DAILY_AT "${SUB2TEST_UNTESTED_DAILY_AT:-}" "$(t label_untested_daily_at)"
-  edit_value SUB2TEST_UNTESTED_EVERY_HOURS "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "$(t label_untested_every_hours)"
-  edit_value SUB2TEST_UNTESTED_EVERY_30_MINUTES "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "$(t label_untested_every_30)"
-  edit_value SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_untested_delay)"
-  edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}" "$(t label_full_schedule)"
-  edit_value SUB2TEST_DAILY_AT "${SUB2TEST_DAILY_AT:-}" "$(t label_full_daily_at)"
-  edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}" "$(t label_full_every_hours)"
-  edit_value SUB2TEST_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_full_delay)"
-  edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}" "$(t label_concurrency)"
-  edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}" "$(t label_timeout)"
-  edit_value SUB2TEST_SLEEP_MIN_SECONDS "${SUB2TEST_SLEEP_MIN_SECONDS:-3}" "$(t label_sleep_min)"
-  edit_value SUB2TEST_SLEEP_MAX_SECONDS "${SUB2TEST_SLEEP_MAX_SECONDS:-10}" "$(t label_sleep_max)"
-  preflight_runtime
-  render_timer
-  render_untested_timer
-  systemctl daemon-reload
-  if systemctl is-enabled sub2test.timer >/dev/null 2>&1; then
-    systemctl restart sub2test.timer
-  fi
-  if systemctl is-enabled sub2test-untested.timer >/dev/null 2>&1; then
-    systemctl restart sub2test-untested.timer
-  fi
-  . "$SUB2TEST_CONFIG_FILE"
-  echo
-  echo "$(t config_after)"
-  echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
-  echo "- $(t untested_task)：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
+  edit_global_config
+}
+
+full_task_menu() {
+  while true; do
+    . "$SUB2TEST_CONFIG_FILE"
+    echo
+    echo "$(t full_menu_title)"
+    echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
+    echo
+    echo "1) $(t full_menu_config)"
+    echo "2) $(t full_menu_enable)"
+    echo "3) $(t full_menu_disable)"
+    echo "4) $(t full_menu_run_all)"
+    echo "5) $(t full_menu_run_error)"
+    echo "6) $(t full_menu_run_disabled)"
+    echo "7) $(t full_menu_show_log)"
+    echo "8) $(t menu_back)"
+    read -r -p "> " choice
+    case "$choice" in
+      1) edit_full_task_config ;;
+      2) enable_task ;;
+      3) disable_task ;;
+      4) run_once all ;;
+      5) run_once error ;;
+      6) run_once disabled ;;
+      7) show_last_full_log ;;
+      8) return 0 ;;
+      *) echo "$(t invalid_option)" ;;
+    esac
+  done
+}
+
+untested_task_menu() {
+  while true; do
+    . "$SUB2TEST_CONFIG_FILE"
+    echo
+    echo "$(t untested_menu_title)"
+    echo "- $(t untested_task)：$(untested_schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
+    echo
+    echo "1) $(t untested_menu_config)"
+    echo "2) $(t untested_menu_enable)"
+    echo "3) $(t untested_menu_disable)"
+    echo "4) $(t untested_menu_show_log)"
+    echo "5) $(t menu_back)"
+    read -r -p "> " choice
+    case "$choice" in
+      1) edit_untested_task_config ;;
+      2) enable_untested_task ;;
+      3) disable_untested_task ;;
+      4) show_last_untested_log ;;
+      5) return 0 ;;
+      *) echo "$(t invalid_option)" ;;
+    esac
+  done
+}
+
+manual_run_menu() {
+  while true; do
+    . "$SUB2TEST_CONFIG_FILE"
+    echo
+    echo "$(t manual_menu_title)"
+    echo
+    echo "1) $(t menu_run_all)"
+    echo "2) $(t menu_run_error)"
+    echo "3) $(t menu_run_disabled)"
+    echo "4) $(t menu_run_untested)"
+    echo "5) $(t menu_back)"
+    read -r -p "> " choice
+    case "$choice" in
+      1) run_once all ;;
+      2) run_once error ;;
+      3) run_once disabled ;;
+      4) run_once untested ;;
+      5) return 0 ;;
+      *) echo "$(t invalid_option)" ;;
+    esac
+  done
 }
 
 uninstall_self() {
@@ -1672,42 +1908,28 @@ menu() {
     . "$SUB2TEST_CONFIG_FILE"
     echo
     echo "$(t menu_title)"
-    echo "$(t current_tasks)"
-    echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
-    echo "- $(t untested_task)：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
+    echo "Version: $SUB2TEST_VERSION"
+    echo "Project: $SUB2TEST_PROJECT_URL"
+    show_task_summaries
     echo
-    echo "1) $(t menu_enable_full)"
-    echo "2) $(t menu_disable_full)"
-    echo "3) $(t menu_enable_untested)"
-    echo "4) $(t menu_disable_untested)"
-    echo "5) $(t menu_edit)"
-    echo "6) $(t menu_run_all)"
-    echo "7) $(t menu_run_error)"
-    echo "8) $(t menu_run_disabled)"
-    echo "9) $(t menu_run_untested)"
-    echo "10) $(t menu_show_config)"
-    echo "11) $(t menu_show_full_log)"
-    echo "12) $(t menu_show_untested_log)"
-    echo "13) $(t menu_switch_language)"
-    echo "14) $(t menu_uninstall)"
-    echo "15) $(t menu_exit)"
+    echo "1) $(t menu_edit)"
+    echo "2) $(t menu_full_task)"
+    echo "3) $(t menu_untested_task)"
+    echo "4) $(t menu_manual_run)"
+    echo "5) $(t menu_show_config)"
+    echo "6) $(t menu_switch_language)"
+    echo "7) $(t menu_uninstall)"
+    echo "8) $(t menu_exit)"
     read -r -p "> " choice
     case "$choice" in
-      1) enable_task ;;
-      2) disable_task ;;
-      3) enable_untested_task ;;
-      4) disable_untested_task ;;
-      5) edit_config ;;
-      6) run_once all ;;
-      7) run_once error ;;
-      8) run_once disabled ;;
-      9) run_once untested ;;
-      10) show_config ;;
-      11) show_last_full_log ;;
-      12) show_last_untested_log ;;
-      13) switch_language ;;
-      14) uninstall_self; exit 0 ;;
-      15) exit 0 ;;
+      1) edit_config ;;
+      2) full_task_menu ;;
+      3) untested_task_menu ;;
+      4) manual_run_menu ;;
+      5) show_config ;;
+      6) switch_language ;;
+      7) uninstall_self; exit 0 ;;
+      8) exit 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
   done
