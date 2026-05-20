@@ -1395,6 +1395,14 @@ disable_untested_task() {
 }
 
 edit_config() {
+  . "$SUB2TEST_CONFIG_FILE"
+  echo
+  echo "当前自动任务说明："
+  echo "- 全量任务：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "（优先测 error，再测可调度的 active 账号）")"
+  echo "- 未测任务：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "（只测 state.json 里还没出现过的 active 账号）")"
+  echo
+  echo "下面开始逐项编辑；直接回车表示保持当前值。"
+  echo
   edit_value SUB2TEST_DEPLOY_MODE "${SUB2TEST_DEPLOY_MODE:-compose}"
   edit_value SUB2TEST_COMPOSE_FILE "${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}"
   edit_value SUB2API_CONFIG_FILE "${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}"
@@ -1433,6 +1441,11 @@ edit_config() {
   if systemctl is-enabled sub2test-untested.timer >/dev/null 2>&1; then
     systemctl restart sub2test-untested.timer
   fi
+  . "$SUB2TEST_CONFIG_FILE"
+  echo
+  echo "修改后的自动任务说明："
+  echo "- 全量任务：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "（优先测 error，再测可调度的 active 账号）")"
+  echo "- 未测任务：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "（只测 state.json 里还没出现过的 active 账号）")"
 }
 
 uninstall_self() {
