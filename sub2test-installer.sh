@@ -160,6 +160,18 @@ SUB2TEST_ADMIN_API_KEY={keep("SUB2TEST_ADMIN_API_KEY", "")}
 SUB2TEST_ERROR_STREAK_THRESHOLD={keep("SUB2TEST_ERROR_STREAK_THRESHOLD", "3")}
 # sub2test 本地状态文件路径
 SUB2TEST_STATE_FILE={keep("SUB2TEST_STATE_FILE", "/opt/sub2test/state.json")}
+# 是否启用未测试 active 账号独立定时任务：true / false
+SUB2TEST_UNTESTED_ENABLED={keep("SUB2TEST_UNTESTED_ENABLED", "false")}
+# 未测试 active 账号定时：兼容旧配置 hourly / daily / weekly
+SUB2TEST_UNTESTED_SCHEDULE={keep("SUB2TEST_UNTESTED_SCHEDULE", "daily")}
+# 未测试 active 账号每天执行时间，格式 HH:MM
+SUB2TEST_UNTESTED_DAILY_AT={keep("SUB2TEST_UNTESTED_DAILY_AT", "")}
+# 未测试 active 账号每隔几小时执行一次（1-23）
+SUB2TEST_UNTESTED_EVERY_HOURS={keep("SUB2TEST_UNTESTED_EVERY_HOURS", "")}
+# 未测试 active 账号每 30 分钟执行一次（true / false）；开启后优先于按小时配置
+SUB2TEST_UNTESTED_EVERY_30_MINUTES={keep("SUB2TEST_UNTESTED_EVERY_30_MINUTES", "false")}
+# 未测试 active 账号 systemd RandomizedDelaySec
+SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS={keep("SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS", "120")}
 # 是否启用 systemd 定时任务：true / false
 SUB2TEST_ENABLED={keep("SUB2TEST_ENABLED", "false")}
 # 兼容旧配置：hourly / daily / weekly
@@ -237,9 +249,16 @@ path.write_text("\n".join(out) + "\n", encoding='utf-8')
 PY_SAVE_CONFIG
 }
 
-systemd_calendar() {
-  local daily_at="${SUB2TEST_DAILY_AT:-}"
-  local every_hours="${SUB2TEST_EVERY_HOURS:-}"
+systemd_calendar_for() {
+  local daily_at="$1"
+  local every_hours="$2"
+  local fallback_schedule="$3"
+  local every_30_minutes="${4:-false}"
+
+  if [ "$every_30_minutes" = "true" ]; then
+    echo "*:0/30"
+    return 0
+  fi
 
   if [ -n "$daily_at" ]; then
     python3 - "$daily_at" <<'PY_DAILY_AT'
@@ -248,7 +267,7 @@ import sys
 value = (sys.argv[1] or '').strip()
 match = re.fullmatch(r'([01]?\d|2[0-3]):([0-5]\d)', value)
 if not match:
-    print('SUB2TEST_DAILY_AT must use HH:MM (00:00-23:59)', file=sys.stderr)
+    print('daily time must use HH:MM (00:00-23:59)', file=sys.stderr)
     sys.exit(1)
 hour, minute = match.groups()
 print(f"*-*-* {int(hour):02d}:{int(minute):02d}:00")
@@ -263,17 +282,17 @@ value = (sys.argv[1] or '').strip()
 try:
     hours = int(value)
 except Exception:
-    print('SUB2TEST_EVERY_HOURS must be an integer between 1 and 23', file=sys.stderr)
+    print('every-hours must be an integer between 1 and 23', file=sys.stderr)
     sys.exit(1)
 if hours < 1 or hours > 23:
-    print('SUB2TEST_EVERY_HOURS must be between 1 and 23', file=sys.stderr)
+    print('every-hours must be between 1 and 23', file=sys.stderr)
     sys.exit(1)
 print(f"*-*-* 0/{hours}:00:00")
 PY_EVERY_HOURS
     return 0
   fi
 
-  case "${SUB2TEST_SCHEDULE:-daily}" in
+  case "$fallback_schedule" in
     hourly) echo "hourly" ;;
     daily) echo "daily" ;;
     weekly) echo "weekly" ;;
@@ -281,20 +300,28 @@ PY_EVERY_HOURS
   esac
 }
 
-systemd_randomized_delay() {
-  python3 - "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" <<'PY_RANDOM_DELAY'
+systemd_calendar() {
+  systemd_calendar_for "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false"
+}
+
+systemd_randomized_delay_for() {
+  python3 - "$1" <<'PY_RANDOM_DELAY'
 import sys
 value = (sys.argv[1] or '').strip()
 try:
     seconds = int(value)
 except Exception:
-    print('SUB2TEST_RANDOMIZED_DELAY_SECONDS must be a non-negative integer', file=sys.stderr)
+    print('randomized delay must be a non-negative integer', file=sys.stderr)
     sys.exit(1)
 if seconds < 0:
-    print('SUB2TEST_RANDOMIZED_DELAY_SECONDS must be >= 0', file=sys.stderr)
+    print('randomized delay must be >= 0', file=sys.stderr)
     sys.exit(1)
 print(seconds)
 PY_RANDOM_DELAY
+}
+
+systemd_randomized_delay() {
+  systemd_randomized_delay_for "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}"
 }
 
 render_timer() {
@@ -307,6 +334,22 @@ OnCalendar=$(systemd_calendar)
 Persistent=true
 RandomizedDelaySec=$(systemd_randomized_delay)
 Unit=sub2test.service
+
+[Install]
+WantedBy=timers.target
+EOF_TIMER
+}
+
+render_untested_timer() {
+  cat > /etc/systemd/system/sub2test-untested.timer <<EOF_TIMER
+[Unit]
+Description=Run sub2test for untested active accounts periodically
+
+[Timer]
+OnCalendar=$(systemd_calendar_for "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}")
+Persistent=true
+RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}")
+Unit=sub2test-untested.service
 
 [Install]
 WantedBy=timers.target
@@ -598,6 +641,9 @@ build_account_where_clause() {
     disabled)
       printf "%s" "status = 'inactive'"
       ;;
+    untested)
+      printf "%s" "(status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
+      ;;
     *)
       printf "%s" "(status = 'error' OR (status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())))"
       ;;
@@ -606,7 +652,7 @@ build_account_where_clause() {
 
 build_account_order_clause() {
   case "${1:-all}" in
-    error|disabled)
+    error|disabled|untested)
       printf "%s" "priority ASC, id ASC"
       ;;
     *)
@@ -678,6 +724,9 @@ if mode == 'error':
     order_clause = "priority ASC, id ASC"
 elif mode == 'disabled':
     where_clause = "status = 'inactive'"
+    order_clause = "priority ASC, id ASC"
+elif mode == 'untested':
+    where_clause = "(status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
     order_clause = "priority ASC, id ASC"
 else:
     where_clause = """
@@ -876,16 +925,6 @@ def apply_account_state(account_state: dict, native_status: str, streak_count: i
         account_state.pop('disabled_by_sub2test_at', None)
 
 
-def prune_state(state: dict, keep_ids):
-    accounts = state.get('accounts')
-    if not isinstance(accounts, dict):
-        return
-    keep_keys = {str(account_id) for account_id in keep_ids}
-    stale_keys = [key for key in accounts if key not in keep_keys]
-    for key in stale_keys:
-        accounts.pop(key, None)
-
-
 def update_account_status(account_id: int, status: str):
     body = json.dumps({'status': status}).encode('utf-8')
     headers = {
@@ -922,6 +961,12 @@ def enable_account(account_id: int):
 
 state = load_state(state_file)
 processed_account_ids = set()
+
+if mode == 'untested':
+    initial_count = len(rows)
+    known_accounts = state.get('accounts', {}) if isinstance(state.get('accounts'), dict) else {}
+    rows = [row for row in rows if str(row.get('id', '')) not in known_accounts]
+    print(f'mode=untested candidates={initial_count} pending={len(rows)}')
 
 
 def handle_sigpipe(signum, frame):
@@ -1174,7 +1219,6 @@ for batch_start in range(0, len(rows), batch_size):
         time.sleep(sleep_seconds)
 
 if not pipe_closed:
-    prune_state(state, processed_account_ids)
     try:
         save_state(state_file, state)
     except Exception as exc:
@@ -1232,6 +1276,12 @@ show_config() {
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}    # 管理端 API Key"
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
+  echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}    # 是否启用未测试 active 账号定时任务"
+  echo "SUB2TEST_UNTESTED_SCHEDULE=${SUB2TEST_UNTESTED_SCHEDULE:-daily}    # 未测试 active 账号兼容旧定时频率"
+  echo "SUB2TEST_UNTESTED_DAILY_AT=${SUB2TEST_UNTESTED_DAILY_AT:-}    # 未测试 active 账号每天执行时间，格式 HH:MM"
+  echo "SUB2TEST_UNTESTED_EVERY_HOURS=${SUB2TEST_UNTESTED_EVERY_HOURS:-}    # 未测试 active 账号每隔几小时执行一次"
+  echo "SUB2TEST_UNTESTED_EVERY_30_MINUTES=${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}    # 未测试 active 账号每 30 分钟执行一次"
+  echo "SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}    # 未测试 active 账号 systemd 随机延迟秒数"
   echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用定时任务"
   echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}    # 兼容旧定时频率"
   echo "SUB2TEST_DAILY_AT=${SUB2TEST_DAILY_AT:-}    # 每天执行时间，格式 HH:MM"
@@ -1257,15 +1307,36 @@ enable_task() {
   preflight_runtime
   save_config_value SUB2TEST_ENABLED true
   render_timer
+  render_untested_timer
   systemctl daemon-reload
   systemctl enable --now sub2test.timer
+  if [ "${SUB2TEST_UNTESTED_ENABLED:-false}" = "true" ]; then
+    systemctl enable --now sub2test-untested.timer
+  else
+    systemctl disable --now sub2test-untested.timer >/dev/null 2>&1 || true
+  fi
   echo "sub2test timer enabled"
+}
+
+enable_untested_task() {
+  preflight_runtime
+  save_config_value SUB2TEST_UNTESTED_ENABLED true
+  render_untested_timer
+  systemctl daemon-reload
+  systemctl enable --now sub2test-untested.timer
+  echo "sub2test untested timer enabled"
 }
 
 disable_task() {
   save_config_value SUB2TEST_ENABLED false
   systemctl disable --now sub2test.timer || true
   echo "sub2test timer disabled"
+}
+
+disable_untested_task() {
+  save_config_value SUB2TEST_UNTESTED_ENABLED false
+  systemctl disable --now sub2test-untested.timer || true
+  echo "sub2test untested timer disabled"
 }
 
 edit_config() {
@@ -1283,6 +1354,12 @@ edit_config() {
   edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}"
   edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}"
   edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}"
+  edit_value SUB2TEST_UNTESTED_ENABLED "${SUB2TEST_UNTESTED_ENABLED:-false}"
+  edit_value SUB2TEST_UNTESTED_SCHEDULE "${SUB2TEST_UNTESTED_SCHEDULE:-daily}"
+  edit_value SUB2TEST_UNTESTED_DAILY_AT "${SUB2TEST_UNTESTED_DAILY_AT:-}"
+  edit_value SUB2TEST_UNTESTED_EVERY_HOURS "${SUB2TEST_UNTESTED_EVERY_HOURS:-}"
+  edit_value SUB2TEST_UNTESTED_EVERY_30_MINUTES "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}"
+  edit_value SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}"
   edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}"
   edit_value SUB2TEST_DAILY_AT "${SUB2TEST_DAILY_AT:-}"
   edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}"
@@ -1293,15 +1370,20 @@ edit_config() {
   edit_value SUB2TEST_SLEEP_MAX_SECONDS "${SUB2TEST_SLEEP_MAX_SECONDS:-10}"
   preflight_runtime
   render_timer
+  render_untested_timer
   systemctl daemon-reload
   if systemctl is-enabled sub2test.timer >/dev/null 2>&1; then
     systemctl restart sub2test.timer
+  fi
+  if systemctl is-enabled sub2test-untested.timer >/dev/null 2>&1; then
+    systemctl restart sub2test-untested.timer
   fi
 }
 
 uninstall_self() {
   systemctl disable --now sub2test.timer || true
-  rm -f /etc/systemd/system/sub2test.service /etc/systemd/system/sub2test.timer "__LINK_FILE__"
+  systemctl disable --now sub2test-untested.timer || true
+  rm -f /etc/systemd/system/sub2test.service /etc/systemd/system/sub2test.timer /etc/systemd/system/sub2test-untested.service /etc/systemd/system/sub2test-untested.timer "__LINK_FILE__"
   rm -rf "__INSTALL_ROOT__"
   echo "sub2test removed"
 }
@@ -1310,9 +1392,9 @@ run_once() {
   . "$SUB2TEST_CONFIG_FILE"
   local mode="${1:-all}"
   case "$mode" in
-    all|error|disabled) ;;
+    all|error|disabled|untested) ;;
     *)
-      echo "Usage: sub2test run-once [all|error|disabled]" >&2
+      echo "Usage: sub2test run-once [all|error|disabled|untested]" >&2
       return 1
       ;;
   esac
@@ -1329,24 +1411,30 @@ menu() {
     echo "sub2test 菜单"
     echo "1) 启用自动任务"
     echo "2) 禁用自动任务"
-    echo "3) 编辑参数"
-    echo "4) 立即执行一次（全部）"
-    echo "5) 仅测试 error 账号"
-    echo "6) 仅测试 disabled 账号"
-    echo "7) 查看当前配置"
-    echo "8) 卸载脚本和定时器"
-    echo "9) 退出"
+    echo "3) 启用未测试 active 账号自动任务"
+    echo "4) 禁用未测试 active 账号自动任务"
+    echo "5) 编辑参数"
+    echo "6) 立即执行一次（全部）"
+    echo "7) 仅测试 error 账号"
+    echo "8) 仅测试 disabled 账号"
+    echo "9) 仅测试未测试 active 账号"
+    echo "10) 查看当前配置"
+    echo "11) 卸载脚本和定时器"
+    echo "12) 退出"
     read -r -p "> " choice
     case "$choice" in
       1) enable_task ;;
       2) disable_task ;;
-      3) edit_config ;;
-      4) run_once all ;;
-      5) run_once error ;;
-      6) run_once disabled ;;
-      7) show_config ;;
-      8) uninstall_self; exit 0 ;;
-      9) exit 0 ;;
+      3) enable_untested_task ;;
+      4) disable_untested_task ;;
+      5) edit_config ;;
+      6) run_once all ;;
+      7) run_once error ;;
+      8) run_once disabled ;;
+      9) run_once untested ;;
+      10) show_config ;;
+      11) uninstall_self; exit 0 ;;
+      12) exit 0 ;;
       *) echo "无效选项" ;;
     esac
   done
@@ -1357,8 +1445,10 @@ case "${1:-menu}" in
   show-config) show_config ;;
   enable) enable_task ;;
   disable) disable_task ;;
+  enable-untested) enable_untested_task ;;
+  disable-untested) disable_untested_task ;;
   menu) menu ;;
-  *) echo "Usage: sub2test [menu|run-once [all|error|disabled]|show-config|enable|disable]" >&2; exit 1 ;;
+  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|show-config|enable|disable|enable-untested|disable-untested]" >&2; exit 1 ;;
 esac
 '''
 content = content.replace('__CONFIG_FILE__', config_file)
@@ -1377,7 +1467,17 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=$LINK_FILE run-once
+ExecStart=/usr/bin/flock -w 0 /opt/sub2test/run.lock $LINK_FILE run-once
+EOF
+
+cat > /etc/systemd/system/sub2test-untested.service <<EOF
+[Unit]
+Description=Sub2API external sub2test untested runner
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -w 0 /opt/sub2test/run.lock $LINK_FILE run-once untested
 EOF
 
 cat > "$SYSTEMD_TIMER" <<'EOF'
@@ -1389,6 +1489,20 @@ OnCalendar=daily
 Persistent=true
 RandomizedDelaySec=120
 Unit=sub2test.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+cat > /etc/systemd/system/sub2test-untested.timer <<'EOF'
+[Unit]
+Description=Run sub2test for untested active accounts periodically
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=120
+Unit=sub2test-untested.service
 
 [Install]
 WantedBy=timers.target
