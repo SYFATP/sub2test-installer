@@ -1293,6 +1293,57 @@ show_config() {
   echo "SUB2TEST_SLEEP_MAX_SECONDS=${SUB2TEST_SLEEP_MAX_SECONDS:-10}    # 批间最大暂停秒数"
 }
 
+schedule_summary() {
+  local enabled="$1"
+  local daily_at="$2"
+  local every_hours="$3"
+  local fallback_schedule="$4"
+  local every_30_minutes="${5:-false}"
+  local randomized_delay="$6"
+  local scope="$7"
+
+  if [ "$enabled" != "true" ]; then
+    echo "未启用"
+    return 0
+  fi
+
+  if [ "$every_30_minutes" = "true" ]; then
+    echo "已启用：每 30 分钟自动执行一次${scope}，不加随机延迟"
+    if [ -n "$randomized_delay" ] && [ "$randomized_delay" != "0" ]; then
+      echo "已启用：每 30 分钟自动执行一次${scope}，并额外随机延后 ${randomized_delay} 秒"
+    fi
+    return 0
+  fi
+
+  if [ -n "$daily_at" ]; then
+    echo "已启用：每天 ${daily_at} 自动执行一次${scope}"
+    if [ -n "$randomized_delay" ] && [ "$randomized_delay" != "0" ]; then
+      echo "已启用：每天 ${daily_at} 自动执行一次${scope}，并额外随机延后 ${randomized_delay} 秒"
+    fi
+    return 0
+  fi
+
+  if [ -n "$every_hours" ]; then
+    echo "已启用：每 ${every_hours} 小时自动执行一次${scope}"
+    if [ -n "$randomized_delay" ] && [ "$randomized_delay" != "0" ]; then
+      echo "已启用：每 ${every_hours} 小时自动执行一次${scope}，并额外随机延后 ${randomized_delay} 秒"
+    fi
+    return 0
+  fi
+
+  case "$fallback_schedule" in
+    hourly)
+      echo "已启用：每小时自动执行一次${scope}"
+      ;;
+    weekly)
+      echo "已启用：每周自动执行一次${scope}"
+      ;;
+    *)
+      echo "已启用：每天自动执行一次${scope}"
+      ;;
+  esac
+}
+
 edit_value() {
   local key="$1"
   local current="$2"
@@ -1411,8 +1462,13 @@ run_once() {
 
 menu() {
   while true; do
+    . "$SUB2TEST_CONFIG_FILE"
     echo
     echo "sub2test 菜单"
+    echo "当前自动任务："
+    echo "- 全量任务：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "（优先测 error，再测可调度的 active 账号）")"
+    echo "- 未测任务：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "（只测 state.json 里还没出现过的 active 账号）")"
+    echo
     echo "1) 启用自动任务"
     echo "2) 禁用自动任务"
     echo "3) 启用未测试 active 账号自动任务"
