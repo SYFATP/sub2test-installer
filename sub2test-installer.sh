@@ -777,7 +777,7 @@ with open(output_path, 'w', encoding='utf-8') as fh:
 PY_EXPORT_ACCOUNTS
   fi
 
-  python3 - "$accounts_json" <<'PY_RUN_HEALTH_CHECK'
+  python3 - "$accounts_json" "$mode" <<'PY_RUN_HEALTH_CHECK'
 import json
 import os
 import random
@@ -846,6 +846,7 @@ batch_size = max(int(get_env('SUB2TEST_CONCURRENCY', '3') or '3'), 1)
 error_streak_threshold = max(int(get_env('SUB2TEST_ERROR_STREAK_THRESHOLD', '3') or '3'), 1)
 state_file = Path(get_env('SUB2TEST_STATE_FILE', '/opt/sub2test/state.json') or '/opt/sub2test/state.json')
 rows_file = sys.argv[1]
+mode = sys.argv[2]
 with open(rows_file, 'r', encoding='utf-8') as fh:
     rows = [json.loads(line) for line in fh if line.strip()]
 print(f'loaded {len(rows)} accounts (batch_size={batch_size})')
@@ -1099,6 +1100,11 @@ def run_account_test(row):
                     if not saw_success and not error_text:
                         error_text = shorten_detail(result_text) or 'test did not complete successfully'
                 else:
+                    payload = None
+                    try:
+                        payload = json.loads(raw_body)
+                    except Exception:
+                        payload = None
                     text = extract_plain_response_text(payload, raw_body)
                     result_text = result_text or shorten_detail(text)
                     if has_success_text(text):
