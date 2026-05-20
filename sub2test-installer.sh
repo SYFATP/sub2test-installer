@@ -1298,7 +1298,11 @@ t() {
     en:menu_run_disabled) echo "Run disabled accounts only" ;;
     en:menu_run_untested) echo "Run untested active accounts only" ;;
     en:menu_show_config) echo "Show current config" ;;
+    en:menu_show_full_log) echo "Show last full-task log" ;;
+    en:menu_show_untested_log) echo "Show last untested-task log" ;;
     en:menu_switch_language) echo "Switch language" ;;
+    en:last_full_log_title) echo "Last full automatic task log:" ;;
+    en:last_untested_log_title) echo "Last untested automatic task log:" ;;
     en:language_menu_title) echo "Choose interface language:" ;;
     en:language_option_zh) echo "Chinese" ;;
     en:language_option_en) echo "English" ;;
@@ -1363,7 +1367,11 @@ t() {
     zh:menu_run_disabled) echo "仅测试 disabled 账号" ;;
     zh:menu_run_untested) echo "仅测试未测试 active 账号" ;;
     zh:menu_show_config) echo "查看当前配置" ;;
+    zh:menu_show_full_log) echo "查看上次全量自动任务日志" ;;
+    zh:menu_show_untested_log) echo "查看上次未测自动任务日志" ;;
     zh:menu_switch_language) echo "切换语言" ;;
+    zh:last_full_log_title) echo "上次全量自动任务日志：" ;;
+    zh:last_untested_log_title) echo "上次未测自动任务日志：" ;;
     zh:language_menu_title) echo "选择界面语言：" ;;
     zh:language_option_zh) echo "中文" ;;
     zh:language_option_en) echo "English" ;;
@@ -1496,6 +1504,18 @@ edit_value() {
     save_config_value "$key" "$input"
     . "$SUB2TEST_CONFIG_FILE"
   fi
+}
+
+show_last_full_log() {
+  echo
+  echo "$(t last_full_log_title)"
+  journalctl -u sub2test.service -n 100 --no-pager || true
+}
+
+show_last_untested_log() {
+  echo
+  echo "$(t last_untested_log_title)"
+  journalctl -u sub2test-untested.service -n 100 --no-pager || true
 }
 
 switch_language() {
@@ -1660,9 +1680,11 @@ menu() {
     echo "8) $(t menu_run_disabled)"
     echo "9) $(t menu_run_untested)"
     echo "10) $(t menu_show_config)"
-    echo "11) $(t menu_switch_language)"
-    echo "12) $(t menu_uninstall)"
-    echo "13) $(t menu_exit)"
+    echo "11) $(t menu_show_full_log)"
+    echo "12) $(t menu_show_untested_log)"
+    echo "13) $(t menu_switch_language)"
+    echo "14) $(t menu_uninstall)"
+    echo "15) $(t menu_exit)"
     read -r -p "> " choice
     case "$choice" in
       1) enable_task ;;
@@ -1675,9 +1697,11 @@ menu() {
       8) run_once disabled ;;
       9) run_once untested ;;
       10) show_config ;;
-      11) switch_language ;;
-      12) uninstall_self; exit 0 ;;
-      13) exit 0 ;;
+      11) show_last_full_log ;;
+      12) show_last_untested_log ;;
+      13) switch_language ;;
+      14) uninstall_self; exit 0 ;;
+      15) exit 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
   done
