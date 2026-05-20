@@ -1867,21 +1867,15 @@ full_task_menu() {
     echo "1) $(t full_menu_config)"
     echo "2) $(t full_menu_enable)"
     echo "3) $(t full_menu_disable)"
-    echo "4) $(t full_menu_run_all)"
-    echo "5) $(t full_menu_run_error)"
-    echo "6) $(t full_menu_run_disabled)"
-    echo "7) $(t full_menu_show_log)"
-    echo "8) $(t menu_back)"
+    echo "4) $(t full_menu_show_log)"
+    echo "5) $(t menu_back)"
     read -r -p "> " choice
     case "$choice" in
       1) edit_full_task_config ;;
       2) enable_task ;;
       3) disable_task ;;
-      4) run_once all ;;
-      5) run_once error ;;
-      6) run_once disabled ;;
-      7) show_last_full_log ;;
-      8) return 0 ;;
+      4) show_last_full_log ;;
+      5) return 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
   done
