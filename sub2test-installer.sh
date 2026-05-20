@@ -132,7 +132,9 @@ def keep(key: str, default: str) -> str:
     value = existing.get(key, default)
     return '' if value is None else str(value)
 
-content = f'''# sub2test 运行模式：compose=优先从 docker-compose / config.yaml 自动推断数据库信息
+content = f'''# 界面语言：zh / en
+SUB2TEST_LANGUAGE={keep("SUB2TEST_LANGUAGE", "zh")}
+# sub2test 运行模式：compose=优先从 docker-compose / config.yaml 自动推断数据库信息
 SUB2TEST_DEPLOY_MODE={keep("SUB2TEST_DEPLOY_MODE", "compose")}
 # Sub2API 的 docker-compose.yml 路径，用于自动识别数据库配置
 SUB2TEST_COMPOSE_FILE={keep("SUB2TEST_COMPOSE_FILE", compose_file)}
@@ -1262,6 +1264,136 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"
 [ -f "$SUB2TEST_CONFIG_FILE" ] && . "$SUB2TEST_CONFIG_FILE"
 
+t() {
+  local key="$1"
+  local lang="${SUB2TEST_LANGUAGE:-zh}"
+  case "$lang:$key" in
+    en:menu_title) echo "sub2test menu" ;;
+    en:current_tasks) echo "Current automatic tasks:" ;;
+    en:full_task) echo "Full run" ;;
+    en:untested_task) echo "Untested run" ;;
+    en:full_scope) echo " (checks error accounts first, then schedulable active accounts)" ;;
+    en:untested_scope) echo " (checks only active accounts not yet seen in state.json)" ;;
+    en:not_enabled) echo "Disabled" ;;
+    en:enabled_every_30_no_delay) echo "Enabled: runs every 30 minutes%s, with no random delay" ;;
+    en:enabled_every_30_with_delay) echo "Enabled: runs every 30 minutes%s, plus a random delay up to %s seconds" ;;
+    en:enabled_daily) echo "Enabled: runs every day at %s%s" ;;
+    en:enabled_daily_with_delay) echo "Enabled: runs every day at %s%s, plus a random delay up to %s seconds" ;;
+    en:enabled_every_hours) echo "Enabled: runs every %s hours%s" ;;
+    en:enabled_every_hours_with_delay) echo "Enabled: runs every %s hours%s, plus a random delay up to %s seconds" ;;
+    en:enabled_hourly) echo "Enabled: runs hourly%s" ;;
+    en:enabled_weekly) echo "Enabled: runs weekly%s" ;;
+    en:enabled_daily_fallback) echo "Enabled: runs daily%s" ;;
+    en:config_intro) echo "Current task summary:" ;;
+    en:edit_intro) echo "Starting interactive edit. Press Enter to keep the current value." ;;
+    en:config_after) echo "Updated task summary:" ;;
+    en:invalid_option) echo "Invalid option" ;;
+    en:menu_enable_full) echo "Enable full automatic task" ;;
+    en:menu_disable_full) echo "Disable full automatic task" ;;
+    en:menu_enable_untested) echo "Enable untested automatic task" ;;
+    en:menu_disable_untested) echo "Disable untested automatic task" ;;
+    en:menu_edit) echo "Edit settings" ;;
+    en:menu_run_all) echo "Run once (all)" ;;
+    en:menu_run_error) echo "Run error accounts only" ;;
+    en:menu_run_disabled) echo "Run disabled accounts only" ;;
+    en:menu_run_untested) echo "Run untested active accounts only" ;;
+    en:menu_show_config) echo "Show current config" ;;
+    en:menu_uninstall) echo "Uninstall script and timers" ;;
+    en:menu_exit) echo "Exit" ;;
+    en:label_language) echo "Interface language (zh/en)" ;;
+    en:label_deploy_mode) echo "Deploy mode (usually keep compose)" ;;
+    en:label_compose_file) echo "Path to docker-compose.yml" ;;
+    en:label_app_config_file) echo "Path to Sub2API config file" ;;
+    en:label_db_host) echo "Database host (leave blank for auto-detect)" ;;
+    en:label_db_port) echo "Database port" ;;
+    en:label_db_user) echo "Database user (leave blank for auto-detect)" ;;
+    en:label_db_password) echo "Database password (leave blank for auto-detect)" ;;
+    en:label_db_name) echo "Database name (leave blank for auto-detect)" ;;
+    en:label_db_sslmode) echo "Database SSL mode" ;;
+    en:label_db_container) echo "Database container name (prefer container query when set)" ;;
+    en:label_api_base_url) echo "Admin API base URL" ;;
+    en:label_admin_api_key) echo "Admin API key" ;;
+    en:label_error_threshold) echo "Disable after this many consecutive errors" ;;
+    en:label_state_file) echo "Local state file path" ;;
+    en:label_untested_enabled) echo "Enable automatic task for untested accounts" ;;
+    en:label_untested_schedule) echo "Untested task legacy schedule (hourly/daily/weekly)" ;;
+    en:label_untested_daily_at) echo "Untested task daily run time (HH:MM, leave blank to disable)" ;;
+    en:label_untested_every_hours) echo "Untested task every N hours (1-23, leave blank to disable)" ;;
+    en:label_untested_every_30) echo "Run untested task every 30 minutes" ;;
+    en:label_untested_delay) echo "Untested task random delay seconds" ;;
+    en:label_full_schedule) echo "Full task legacy schedule (hourly/daily/weekly)" ;;
+    en:label_full_daily_at) echo "Full task daily run time (HH:MM, leave blank to disable)" ;;
+    en:label_full_every_hours) echo "Full task every N hours (1-23, leave blank to disable)" ;;
+    en:label_full_delay) echo "Full task random delay seconds" ;;
+    en:label_concurrency) echo "How many accounts to test per batch" ;;
+    en:label_timeout) echo "Timeout per account test in seconds" ;;
+    en:label_sleep_min) echo "Minimum pause between batches in seconds" ;;
+    en:label_sleep_max) echo "Maximum pause between batches in seconds" ;;
+    zh:menu_title) echo "sub2test 菜单" ;;
+    zh:current_tasks) echo "当前自动任务：" ;;
+    zh:full_task) echo "全量任务" ;;
+    zh:untested_task) echo "未测任务" ;;
+    zh:full_scope) echo "（优先测 error，再测可调度的 active 账号）" ;;
+    zh:untested_scope) echo "（只测 state.json 里还没出现过的 active 账号）" ;;
+    zh:not_enabled) echo "未启用" ;;
+    zh:enabled_every_30_no_delay) echo "已启用：每 30 分钟自动执行一次%s，不加随机延迟" ;;
+    zh:enabled_every_30_with_delay) echo "已启用：每 30 分钟自动执行一次%s，并额外随机延后 %s 秒" ;;
+    zh:enabled_daily) echo "已启用：每天 %s 自动执行一次%s" ;;
+    zh:enabled_daily_with_delay) echo "已启用：每天 %s 自动执行一次%s，并额外随机延后 %s 秒" ;;
+    zh:enabled_every_hours) echo "已启用：每 %s 小时自动执行一次%s" ;;
+    zh:enabled_every_hours_with_delay) echo "已启用：每 %s 小时自动执行一次%s，并额外随机延后 %s 秒" ;;
+    zh:enabled_hourly) echo "已启用：每小时自动执行一次%s" ;;
+    zh:enabled_weekly) echo "已启用：每周自动执行一次%s" ;;
+    zh:enabled_daily_fallback) echo "已启用：每天自动执行一次%s" ;;
+    zh:config_intro) echo "当前自动任务说明：" ;;
+    zh:edit_intro) echo "下面开始逐项编辑；直接回车表示保持当前值。" ;;
+    zh:config_after) echo "修改后的自动任务说明：" ;;
+    zh:invalid_option) echo "无效选项" ;;
+    zh:menu_enable_full) echo "启用自动任务" ;;
+    zh:menu_disable_full) echo "禁用自动任务" ;;
+    zh:menu_enable_untested) echo "启用未测试 active 账号自动任务" ;;
+    zh:menu_disable_untested) echo "禁用未测试 active 账号自动任务" ;;
+    zh:menu_edit) echo "编辑参数" ;;
+    zh:menu_run_all) echo "立即执行一次（全部）" ;;
+    zh:menu_run_error) echo "仅测试 error 账号" ;;
+    zh:menu_run_disabled) echo "仅测试 disabled 账号" ;;
+    zh:menu_run_untested) echo "仅测试未测试 active 账号" ;;
+    zh:menu_show_config) echo "查看当前配置" ;;
+    zh:menu_uninstall) echo "卸载脚本和定时器" ;;
+    zh:menu_exit) echo "退出" ;;
+    zh:label_language) echo "界面语言（zh/en）" ;;
+    zh:label_deploy_mode) echo "部署方式（一般保持 compose）" ;;
+    zh:label_compose_file) echo "docker-compose.yml 路径" ;;
+    zh:label_app_config_file) echo "Sub2API 配置文件路径" ;;
+    zh:label_db_host) echo "数据库主机地址（留空表示自动识别）" ;;
+    zh:label_db_port) echo "数据库端口" ;;
+    zh:label_db_user) echo "数据库用户名（留空表示自动识别）" ;;
+    zh:label_db_password) echo "数据库密码（留空表示自动识别）" ;;
+    zh:label_db_name) echo "数据库名（留空表示自动识别）" ;;
+    zh:label_db_sslmode) echo "数据库 SSL 模式" ;;
+    zh:label_db_container) echo "数据库容器名（设置后优先走容器查库）" ;;
+    zh:label_api_base_url) echo "管理端 API 地址" ;;
+    zh:label_admin_api_key) echo "管理端 API Key" ;;
+    zh:label_error_threshold) echo "连续报错多少次后停用账号" ;;
+    zh:label_state_file) echo "本地状态文件路径" ;;
+    zh:label_untested_enabled) echo "是否启用未测账号自动任务" ;;
+    zh:label_untested_schedule) echo "未测任务兼容旧频率（hourly/daily/weekly）" ;;
+    zh:label_untested_daily_at) echo "未测任务每天几点执行（HH:MM，留空表示不用这个）" ;;
+    zh:label_untested_every_hours) echo "未测任务每隔几小时执行一次（1-23，留空表示不用这个）" ;;
+    zh:label_untested_every_30) echo "未测任务是否每 30 分钟执行一次" ;;
+    zh:label_untested_delay) echo "未测任务随机延迟秒数" ;;
+    zh:label_full_schedule) echo "全量任务兼容旧频率（hourly/daily/weekly）" ;;
+    zh:label_full_daily_at) echo "全量任务每天几点执行（HH:MM，留空表示不用这个）" ;;
+    zh:label_full_every_hours) echo "全量任务每隔几小时执行一次（1-23，留空表示不用这个）" ;;
+    zh:label_full_delay) echo "全量任务随机延迟秒数" ;;
+    zh:label_concurrency) echo "每批同时测试几个账号" ;;
+    zh:label_timeout) echo "单个账号测试超时秒数" ;;
+    zh:label_sleep_min) echo "批次之间最少暂停几秒" ;;
+    zh:label_sleep_max) echo "批次之间最多暂停几秒" ;;
+    *) echo "$key" ;;
+  esac
+}
+
 show_config() {
   echo "SUB2TEST_DEPLOY_MODE=${SUB2TEST_DEPLOY_MODE:-compose}    # 运行模式：compose=自动识别数据库配置"
   echo "SUB2TEST_COMPOSE_FILE=${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}    # docker-compose.yml 路径"
@@ -1303,43 +1435,46 @@ schedule_summary() {
   local scope="$7"
 
   if [ "$enabled" != "true" ]; then
-    echo "未启用"
+    t not_enabled
     return 0
   fi
 
   if [ "$every_30_minutes" = "true" ]; then
-    echo "已启用：每 30 分钟自动执行一次${scope}，不加随机延迟"
     if [ -n "$randomized_delay" ] && [ "$randomized_delay" != "0" ]; then
-      echo "已启用：每 30 分钟自动执行一次${scope}，并额外随机延后 ${randomized_delay} 秒"
+      printf "$(t enabled_every_30_with_delay)" "$scope" "$randomized_delay"
+    else
+      printf "$(t enabled_every_30_no_delay)" "$scope"
     fi
     return 0
   fi
 
   if [ -n "$daily_at" ]; then
-    echo "已启用：每天 ${daily_at} 自动执行一次${scope}"
     if [ -n "$randomized_delay" ] && [ "$randomized_delay" != "0" ]; then
-      echo "已启用：每天 ${daily_at} 自动执行一次${scope}，并额外随机延后 ${randomized_delay} 秒"
+      printf "$(t enabled_daily_with_delay)" "$daily_at" "$scope" "$randomized_delay"
+    else
+      printf "$(t enabled_daily)" "$daily_at" "$scope"
     fi
     return 0
   fi
 
   if [ -n "$every_hours" ]; then
-    echo "已启用：每 ${every_hours} 小时自动执行一次${scope}"
     if [ -n "$randomized_delay" ] && [ "$randomized_delay" != "0" ]; then
-      echo "已启用：每 ${every_hours} 小时自动执行一次${scope}，并额外随机延后 ${randomized_delay} 秒"
+      printf "$(t enabled_every_hours_with_delay)" "$every_hours" "$scope" "$randomized_delay"
+    else
+      printf "$(t enabled_every_hours)" "$every_hours" "$scope"
     fi
     return 0
   fi
 
   case "$fallback_schedule" in
     hourly)
-      echo "已启用：每小时自动执行一次${scope}"
+      printf "$(t enabled_hourly)" "$scope"
       ;;
     weekly)
-      echo "已启用：每周自动执行一次${scope}"
+      printf "$(t enabled_weekly)" "$scope"
       ;;
     *)
-      echo "已启用：每天自动执行一次${scope}"
+      printf "$(t enabled_daily_fallback)" "$scope"
       ;;
   esac
 }
@@ -1398,40 +1533,41 @@ disable_untested_task() {
 edit_config() {
   . "$SUB2TEST_CONFIG_FILE"
   echo
-  echo "当前自动任务说明："
-  echo "- 全量任务：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "（优先测 error，再测可调度的 active 账号）")"
-  echo "- 未测任务：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "（只测 state.json 里还没出现过的 active 账号）")"
+  echo "$(t config_intro)"
+  echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
+  echo "- $(t untested_task)：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
   echo
-  echo "下面开始逐项编辑；直接回车表示保持当前值。"
+  echo "$(t edit_intro)"
   echo
-  edit_value SUB2TEST_DEPLOY_MODE "${SUB2TEST_DEPLOY_MODE:-compose}" "部署方式（一般保持 compose）"
-  edit_value SUB2TEST_COMPOSE_FILE "${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}" "docker-compose.yml 路径"
-  edit_value SUB2API_CONFIG_FILE "${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}" "Sub2API 配置文件路径"
-  edit_value SUB2TEST_DB_HOST "${SUB2TEST_DB_HOST:-}" "数据库主机地址（留空表示自动识别）"
-  edit_value SUB2TEST_DB_PORT "${SUB2TEST_DB_PORT:-5432}" "数据库端口"
-  edit_value SUB2TEST_DB_USER "${SUB2TEST_DB_USER:-}" "数据库用户名（留空表示自动识别）"
-  edit_value SUB2TEST_DB_PASSWORD "${SUB2TEST_DB_PASSWORD:-}" "数据库密码（留空表示自动识别）"
-  edit_value SUB2TEST_DB_NAME "${SUB2TEST_DB_NAME:-}" "数据库名（留空表示自动识别）"
-  edit_value SUB2TEST_DB_SSLMODE "${SUB2TEST_DB_SSLMODE:-disable}" "数据库 SSL 模式"
-  edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}" "数据库容器名（设置后优先走容器查库）"
-  edit_value SUB2TEST_API_BASE_URL "${SUB2TEST_API_BASE_URL:-http://127.0.0.1:8080/api/v1}" "管理端 API 地址"
-  edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}" "管理端 API Key"
-  edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "连续报错多少次后停用账号"
-  edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}" "本地状态文件路径"
-  edit_value SUB2TEST_UNTESTED_ENABLED "${SUB2TEST_UNTESTED_ENABLED:-false}" "是否启用未测账号自动任务"
-  edit_value SUB2TEST_UNTESTED_SCHEDULE "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "未测任务兼容旧频率（hourly/daily/weekly）"
-  edit_value SUB2TEST_UNTESTED_DAILY_AT "${SUB2TEST_UNTESTED_DAILY_AT:-}" "未测任务每天几点执行（HH:MM，留空表示不用这个）"
-  edit_value SUB2TEST_UNTESTED_EVERY_HOURS "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "未测任务每隔几小时执行一次（1-23，留空表示不用这个）"
-  edit_value SUB2TEST_UNTESTED_EVERY_30_MINUTES "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "未测任务是否每 30 分钟执行一次"
-  edit_value SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "未测任务随机延迟秒数"
-  edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}" "全量任务兼容旧频率（hourly/daily/weekly）"
-  edit_value SUB2TEST_DAILY_AT "${SUB2TEST_DAILY_AT:-}" "全量任务每天几点执行（HH:MM，留空表示不用这个）"
-  edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}" "全量任务每隔几小时执行一次（1-23，留空表示不用这个）"
-  edit_value SUB2TEST_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "全量任务随机延迟秒数"
-  edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}" "每批同时测试几个账号"
-  edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}" "单个账号测试超时秒数"
-  edit_value SUB2TEST_SLEEP_MIN_SECONDS "${SUB2TEST_SLEEP_MIN_SECONDS:-3}" "批次之间最少暂停几秒"
-  edit_value SUB2TEST_SLEEP_MAX_SECONDS "${SUB2TEST_SLEEP_MAX_SECONDS:-10}" "批次之间最多暂停几秒"
+  edit_value SUB2TEST_LANGUAGE "${SUB2TEST_LANGUAGE:-zh}" "$(t label_language)"
+  edit_value SUB2TEST_DEPLOY_MODE "${SUB2TEST_DEPLOY_MODE:-compose}" "$(t label_deploy_mode)"
+  edit_value SUB2TEST_COMPOSE_FILE "${SUB2TEST_COMPOSE_FILE:-__COMPOSE_FILE__}" "$(t label_compose_file)"
+  edit_value SUB2API_CONFIG_FILE "${SUB2API_CONFIG_FILE:-__APP_CONFIG_FILE__}" "$(t label_app_config_file)"
+  edit_value SUB2TEST_DB_HOST "${SUB2TEST_DB_HOST:-}" "$(t label_db_host)"
+  edit_value SUB2TEST_DB_PORT "${SUB2TEST_DB_PORT:-5432}" "$(t label_db_port)"
+  edit_value SUB2TEST_DB_USER "${SUB2TEST_DB_USER:-}" "$(t label_db_user)"
+  edit_value SUB2TEST_DB_PASSWORD "${SUB2TEST_DB_PASSWORD:-}" "$(t label_db_password)"
+  edit_value SUB2TEST_DB_NAME "${SUB2TEST_DB_NAME:-}" "$(t label_db_name)"
+  edit_value SUB2TEST_DB_SSLMODE "${SUB2TEST_DB_SSLMODE:-disable}" "$(t label_db_sslmode)"
+  edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}" "$(t label_db_container)"
+  edit_value SUB2TEST_API_BASE_URL "${SUB2TEST_API_BASE_URL:-http://127.0.0.1:8080/api/v1}" "$(t label_api_base_url)"
+  edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}" "$(t label_admin_api_key)"
+  edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "$(t label_error_threshold)"
+  edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}" "$(t label_state_file)"
+  edit_value SUB2TEST_UNTESTED_ENABLED "${SUB2TEST_UNTESTED_ENABLED:-false}" "$(t label_untested_enabled)"
+  edit_value SUB2TEST_UNTESTED_SCHEDULE "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "$(t label_untested_schedule)"
+  edit_value SUB2TEST_UNTESTED_DAILY_AT "${SUB2TEST_UNTESTED_DAILY_AT:-}" "$(t label_untested_daily_at)"
+  edit_value SUB2TEST_UNTESTED_EVERY_HOURS "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "$(t label_untested_every_hours)"
+  edit_value SUB2TEST_UNTESTED_EVERY_30_MINUTES "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "$(t label_untested_every_30)"
+  edit_value SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_untested_delay)"
+  edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}" "$(t label_full_schedule)"
+  edit_value SUB2TEST_DAILY_AT "${SUB2TEST_DAILY_AT:-}" "$(t label_full_daily_at)"
+  edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}" "$(t label_full_every_hours)"
+  edit_value SUB2TEST_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_full_delay)"
+  edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}" "$(t label_concurrency)"
+  edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}" "$(t label_timeout)"
+  edit_value SUB2TEST_SLEEP_MIN_SECONDS "${SUB2TEST_SLEEP_MIN_SECONDS:-3}" "$(t label_sleep_min)"
+  edit_value SUB2TEST_SLEEP_MAX_SECONDS "${SUB2TEST_SLEEP_MAX_SECONDS:-10}" "$(t label_sleep_max)"
   preflight_runtime
   render_timer
   render_untested_timer
@@ -1444,9 +1580,9 @@ edit_config() {
   fi
   . "$SUB2TEST_CONFIG_FILE"
   echo
-  echo "修改后的自动任务说明："
-  echo "- 全量任务：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "（优先测 error，再测可调度的 active 账号）")"
-  echo "- 未测任务：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "（只测 state.json 里还没出现过的 active 账号）")"
+  echo "$(t config_after)"
+  echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
+  echo "- $(t untested_task)：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
 }
 
 uninstall_self() {
@@ -1478,23 +1614,23 @@ menu() {
   while true; do
     . "$SUB2TEST_CONFIG_FILE"
     echo
-    echo "sub2test 菜单"
-    echo "当前自动任务："
-    echo "- 全量任务：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "（优先测 error，再测可调度的 active 账号）")"
-    echo "- 未测任务：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "（只测 state.json 里还没出现过的 active 账号）")"
+    echo "$(t menu_title)"
+    echo "$(t current_tasks)"
+    echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
+    echo "- $(t untested_task)：$(schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_DAILY_AT:-}" "${SUB2TEST_UNTESTED_EVERY_HOURS:-}" "${SUB2TEST_UNTESTED_SCHEDULE:-daily}" "${SUB2TEST_UNTESTED_EVERY_30_MINUTES:-false}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
     echo
-    echo "1) 启用自动任务"
-    echo "2) 禁用自动任务"
-    echo "3) 启用未测试 active 账号自动任务"
-    echo "4) 禁用未测试 active 账号自动任务"
-    echo "5) 编辑参数"
-    echo "6) 立即执行一次（全部）"
-    echo "7) 仅测试 error 账号"
-    echo "8) 仅测试 disabled 账号"
-    echo "9) 仅测试未测试 active 账号"
-    echo "10) 查看当前配置"
-    echo "11) 卸载脚本和定时器"
-    echo "12) 退出"
+    echo "1) $(t menu_enable_full)"
+    echo "2) $(t menu_disable_full)"
+    echo "3) $(t menu_enable_untested)"
+    echo "4) $(t menu_disable_untested)"
+    echo "5) $(t menu_edit)"
+    echo "6) $(t menu_run_all)"
+    echo "7) $(t menu_run_error)"
+    echo "8) $(t menu_run_disabled)"
+    echo "9) $(t menu_run_untested)"
+    echo "10) $(t menu_show_config)"
+    echo "11) $(t menu_uninstall)"
+    echo "12) $(t menu_exit)"
     read -r -p "> " choice
     case "$choice" in
       1) enable_task ;;
@@ -1509,7 +1645,7 @@ menu() {
       10) show_config ;;
       11) uninstall_self; exit 0 ;;
       12) exit 0 ;;
-      *) echo "无效选项" ;;
+      *) echo "$(t invalid_option)" ;;
     esac
   done
 }
