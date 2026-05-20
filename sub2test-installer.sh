@@ -618,8 +618,14 @@ build_account_order_clause() {
 run_health_check() {
   preflight_runtime
   local mode="${1:-all}"
+  local where_clause=""
+  local order_clause=""
+  local query_sql=""
   local accounts_json=""
   local accounts_tsv=""
+  where_clause="$(build_account_where_clause "$mode")"
+  order_clause="$(build_account_order_clause "$mode")"
+  query_sql="SELECT id, COALESCE(name, ''), platform, type, status FROM accounts WHERE deleted_at IS NULL AND ${where_clause} ORDER BY ${order_clause}"
   cleanup_run_health_check() {
     rm -f -- "${accounts_json:-}" "${accounts_tsv:-}"
   }
@@ -631,7 +637,7 @@ run_health_check() {
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, status FROM accounts WHERE deleted_at IS NULL AND $(build_account_where_clause \"$mode\") ORDER BY $(build_account_order_clause \"$mode\")" > "$accounts_tsv"
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "$query_sql" > "$accounts_tsv"
     python3 - "$accounts_tsv" "$accounts_json" <<'PY_EXPORT_CONTAINER_ACCOUNTS'
 import json
 import sys
