@@ -1304,8 +1304,9 @@ edit_value() {
 }
 
 enable_task() {
-  preflight_runtime
   save_config_value SUB2TEST_ENABLED true
+  . "$SUB2TEST_CONFIG_FILE"
+  preflight_runtime
   render_timer
   render_untested_timer
   systemctl daemon-reload
@@ -1319,8 +1320,9 @@ enable_task() {
 }
 
 enable_untested_task() {
-  preflight_runtime
   save_config_value SUB2TEST_UNTESTED_ENABLED true
+  . "$SUB2TEST_CONFIG_FILE"
+  preflight_runtime
   render_untested_timer
   systemctl daemon-reload
   systemctl enable --now sub2test-untested.timer
@@ -1329,12 +1331,14 @@ enable_untested_task() {
 
 disable_task() {
   save_config_value SUB2TEST_ENABLED false
+  . "$SUB2TEST_CONFIG_FILE"
   systemctl disable --now sub2test.timer || true
   echo "sub2test timer disabled"
 }
 
 disable_untested_task() {
   save_config_value SUB2TEST_UNTESTED_ENABLED false
+  . "$SUB2TEST_CONFIG_FILE"
   systemctl disable --now sub2test-untested.timer || true
   echo "sub2test untested timer disabled"
 }
