@@ -1382,10 +1382,16 @@ t() {
     en:label_untested_enabled) echo "Enable automatic task for untested accounts" ;;
     en:label_untested_every_minutes) echo "Run untested task every N minutes (5-720)" ;;
     en:label_untested_delay) echo "Untested task random delay seconds" ;;
-    en:label_full_schedule) echo "Full task legacy schedule (hourly/daily/weekly)" ;;
+    en:label_full_schedule) echo "Full task schedule mode" ;;
     en:label_full_daily_at) echo "Full task daily run time (HH:MM, leave blank to disable)" ;;
     en:label_full_every_hours) echo "Full task every N hours (1-23, leave blank to disable)" ;;
     en:label_full_delay) echo "Full task random delay seconds" ;;
+    en:schedule_mode_title) echo "Choose full task schedule mode:" ;;
+    en:schedule_mode_hourly) echo "Hourly" ;;
+    en:schedule_mode_daily) echo "Daily" ;;
+    en:schedule_mode_weekly) echo "Weekly" ;;
+    en:schedule_mode_every_hours) echo "Every N hours" ;;
+    en:schedule_mode_daily_at) echo "Daily at fixed time" ;;
     en:label_concurrency) echo "How many accounts to test per batch" ;;
     en:label_timeout) echo "Timeout per account test in seconds" ;;
     en:label_sleep_min) echo "Minimum pause between batches in seconds" ;;
@@ -1472,10 +1478,16 @@ t() {
     zh:label_untested_enabled) echo "是否启用未测账号自动任务" ;;
     zh:label_untested_every_minutes) echo "未测任务每隔多少分钟执行一次（5-720）" ;;
     zh:label_untested_delay) echo "未测任务随机延迟秒数" ;;
-    zh:label_full_schedule) echo "全量任务兼容旧频率（hourly/daily/weekly）" ;;
+    zh:label_full_schedule) echo "全量任务调度模式" ;;
     zh:label_full_daily_at) echo "全量任务每天几点执行（HH:MM，留空表示不用这个）" ;;
     zh:label_full_every_hours) echo "全量任务每隔几小时执行一次（1-23，留空表示不用这个）" ;;
     zh:label_full_delay) echo "全量任务随机延迟秒数" ;;
+    zh:schedule_mode_title) echo "请选择全量任务调度模式：" ;;
+    zh:schedule_mode_hourly) echo "每小时一次" ;;
+    zh:schedule_mode_daily) echo "每天一次" ;;
+    zh:schedule_mode_weekly) echo "每周一次" ;;
+    zh:schedule_mode_every_hours) echo "每隔几小时执行一次" ;;
+    zh:schedule_mode_daily_at) echo "每天固定时间执行" ;;
     zh:label_concurrency) echo "每批同时测试几个账号" ;;
     zh:label_timeout) echo "单个账号测试超时秒数" ;;
     zh:label_sleep_min) echo "批次之间最少暂停几秒" ;;
@@ -1644,6 +1656,48 @@ edit_value() {
   fi
 }
 
+choose_full_schedule_mode() {
+  echo
+  echo "$(t schedule_mode_title)"
+  echo "1) $(t schedule_mode_hourly)"
+  echo "2) $(t schedule_mode_daily)"
+  echo "3) $(t schedule_mode_weekly)"
+  echo "4) $(t schedule_mode_every_hours)"
+  echo "5) $(t schedule_mode_daily_at)"
+  read -r -p "> " choice
+  case "$choice" in
+    1)
+      save_config_value SUB2TEST_SCHEDULE hourly
+      save_config_value SUB2TEST_DAILY_AT ""
+      save_config_value SUB2TEST_EVERY_HOURS ""
+      ;;
+    2)
+      save_config_value SUB2TEST_SCHEDULE daily
+      save_config_value SUB2TEST_DAILY_AT ""
+      save_config_value SUB2TEST_EVERY_HOURS ""
+      ;;
+    3)
+      save_config_value SUB2TEST_SCHEDULE weekly
+      save_config_value SUB2TEST_DAILY_AT ""
+      save_config_value SUB2TEST_EVERY_HOURS ""
+      ;;
+    4)
+      save_config_value SUB2TEST_SCHEDULE daily
+      save_config_value SUB2TEST_DAILY_AT ""
+      edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}" "$(t label_full_every_hours)"
+      ;;
+    5)
+      save_config_value SUB2TEST_SCHEDULE daily
+      save_config_value SUB2TEST_EVERY_HOURS ""
+      edit_value SUB2TEST_DAILY_AT "${SUB2TEST_DAILY_AT:-}" "$(t label_full_daily_at)"
+      ;;
+    *)
+      echo "$(t invalid_option)"
+      ;;
+  esac
+  . "$SUB2TEST_CONFIG_FILE"
+}
+
 reload_timers_if_enabled() {
   preflight_runtime
   render_timer
@@ -1701,9 +1755,7 @@ edit_full_task_config() {
   echo
   echo "$(t edit_intro)"
   echo
-  edit_value SUB2TEST_SCHEDULE "${SUB2TEST_SCHEDULE:-daily}" "$(t label_full_schedule)"
-  edit_value SUB2TEST_DAILY_AT "${SUB2TEST_DAILY_AT:-}" "$(t label_full_daily_at)"
-  edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}" "$(t label_full_every_hours)"
+  choose_full_schedule_mode
   edit_value SUB2TEST_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_full_delay)"
   reload_timers_if_enabled
   echo
