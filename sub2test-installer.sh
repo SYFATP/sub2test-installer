@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SUB2TEST_VERSION="0.1.0"
+SUB2TEST_VERSION="0.1.1"
 INSTALL_ROOT="/opt/sub2test"
 CONFIG_DIR="/etc/sub2api"
 SYSTEMD_SERVICE="/etc/systemd/system/sub2test.service"

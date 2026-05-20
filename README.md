@@ -1,11 +1,15 @@
 # sub2test-installer
 
+Current release: `0.1.1`
+
 - [中文](#中文)
 - [English](#english)
 
 ---
 
 ## 中文
+
+`sub2test-installer.sh` 当前发布版本为 `0.1.1`。
 
 `sub2test-installer.sh` 用来给 Sub2API 部署一套独立的 `sub2test` 运行环境：自动发现数据库配置、调用管理端账号测活接口、把连续 `error` 的账号在达到阈值后自动设为 `disabled`，并可通过 systemd timer 定时执行。
 
@@ -168,6 +172,8 @@ cat /opt/sub2test/state.json
 ---
 
 ## English
+
+Current `sub2test-installer.sh` release: `0.1.1`.
 
 `sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
 
