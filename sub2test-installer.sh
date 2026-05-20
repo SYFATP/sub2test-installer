@@ -1298,9 +1298,13 @@ t() {
     en:menu_run_disabled) echo "Run disabled accounts only" ;;
     en:menu_run_untested) echo "Run untested active accounts only" ;;
     en:menu_show_config) echo "Show current config" ;;
+    en:menu_switch_language) echo "Switch language" ;;
+    en:language_menu_title) echo "Choose interface language:" ;;
+    en:language_option_zh) echo "Chinese" ;;
+    en:language_option_en) echo "English" ;;
+    en:language_saved) echo "Interface language updated." ;;
     en:menu_uninstall) echo "Uninstall script and timers" ;;
     en:menu_exit) echo "Exit" ;;
-    en:label_language) echo "Interface language (zh/en)" ;;
     en:label_deploy_mode) echo "Deploy mode (usually keep compose)" ;;
     en:label_compose_file) echo "Path to docker-compose.yml" ;;
     en:label_app_config_file) echo "Path to Sub2API config file" ;;
@@ -1359,9 +1363,13 @@ t() {
     zh:menu_run_disabled) echo "仅测试 disabled 账号" ;;
     zh:menu_run_untested) echo "仅测试未测试 active 账号" ;;
     zh:menu_show_config) echo "查看当前配置" ;;
+    zh:menu_switch_language) echo "切换语言" ;;
+    zh:language_menu_title) echo "选择界面语言：" ;;
+    zh:language_option_zh) echo "中文" ;;
+    zh:language_option_en) echo "English" ;;
+    zh:language_saved) echo "界面语言已更新。" ;;
     zh:menu_uninstall) echo "卸载脚本和定时器" ;;
     zh:menu_exit) echo "退出" ;;
-    zh:label_language) echo "界面语言（zh/en）" ;;
     zh:label_deploy_mode) echo "部署方式（一般保持 compose）" ;;
     zh:label_compose_file) echo "docker-compose.yml 路径" ;;
     zh:label_app_config_file) echo "Sub2API 配置文件路径" ;;
@@ -1488,6 +1496,29 @@ edit_value() {
     save_config_value "$key" "$input"
     . "$SUB2TEST_CONFIG_FILE"
   fi
+}
+
+switch_language() {
+  echo
+  echo "$(t language_menu_title)"
+  echo "1) $(t language_option_zh)"
+  echo "2) $(t language_option_en)"
+  read -r -p "> " choice
+  case "$choice" in
+    1)
+      save_config_value SUB2TEST_LANGUAGE zh
+      . "$SUB2TEST_CONFIG_FILE"
+      echo "$(t language_saved)"
+      ;;
+    2)
+      save_config_value SUB2TEST_LANGUAGE en
+      . "$SUB2TEST_CONFIG_FILE"
+      echo "$(t language_saved)"
+      ;;
+    *)
+      echo "$(t invalid_option)"
+      ;;
+  esac
 }
 
 enable_task() {
@@ -1629,8 +1660,9 @@ menu() {
     echo "8) $(t menu_run_disabled)"
     echo "9) $(t menu_run_untested)"
     echo "10) $(t menu_show_config)"
-    echo "11) $(t menu_uninstall)"
-    echo "12) $(t menu_exit)"
+    echo "11) $(t menu_switch_language)"
+    echo "12) $(t menu_uninstall)"
+    echo "13) $(t menu_exit)"
     read -r -p "> " choice
     case "$choice" in
       1) enable_task ;;
@@ -1643,8 +1675,9 @@ menu() {
       8) run_once disabled ;;
       9) run_once untested ;;
       10) show_config ;;
-      11) uninstall_self; exit 0 ;;
-      12) exit 0 ;;
+      11) switch_language ;;
+      12) uninstall_self; exit 0 ;;
+      13) exit 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
   done
