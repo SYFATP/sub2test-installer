@@ -592,10 +592,13 @@ PY_PREFLIGHT_RUNTIME
 
 run_health_check() {
   preflight_runtime
-  local accounts_json
-  accounts_json="$(mktemp)"
+  local accounts_json=""
   local accounts_tsv=""
-  trap 'rm -f "$accounts_json" "$accounts_tsv"' RETURN
+  cleanup_run_health_check() {
+    rm -f -- "${accounts_json:-}" "${accounts_tsv:-}"
+  }
+  trap cleanup_run_health_check RETURN
+  accounts_json="$(mktemp)"
 
   if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
     accounts_tsv="$(mktemp)"
@@ -835,23 +838,28 @@ def prune_state(state: dict, keep_ids):
 
 def disable_account(account_id: int):
     body = json.dumps({'status': 'disabled'}).encode('utf-8')
-    req = urllib.request.Request(
-        f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}",
-        data=body,
-        headers={
-            'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-        },
-        method='PUT',
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
-            return True, getattr(response, 'status', None) or response.getcode(), ''
-    except urllib.error.HTTPError as err:
-        return False, err.code, response_error_detail(err.code, err.read())
-    except Exception as exc:
-        return False, None, safe_exception_text(exc)
+    headers = {
+        'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+    for method in ('PATCH', 'PUT'):
+        req = urllib.request.Request(
+            f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}",
+            data=body,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+                return True, getattr(response, 'status', None) or response.getcode(), ''
+        except urllib.error.HTTPError as err:
+            if method == 'PATCH' and err.code in (404, 405):
+                continue
+            return False, err.code, response_error_detail(err.code, err.read())
+        except Exception as exc:
+            return False, None, safe_exception_text(exc)
+    return False, None, 'disable request failed'
 
 
 state = load_state(state_file)
@@ -901,11 +909,33 @@ def classify_error_text(http_status: int | None, text: str) -> str:
     raw = shorten_detail(text).lower()
     if http_status == 429 or any(keyword in raw for keyword in ('429', 'rate_limit', 'rate limit', 'too many request')):
         return 'rate_limited'
-    if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'token invalid', 'login again', 'sign in again')):
+    if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'token invalid', 'login again', 'sign in again', 'authentication token')):
         return 'error'
     if raw:
         return 'unknown'
     return 'unknown'
+
+
+def has_success_text(text: str) -> bool:
+    raw = shorten_detail(text).lower()
+    return any(keyword in raw for keyword in (
+        'hi — what can i help',
+        'hi - what can i help',
+        'what can i help with',
+        'what can i help you with',
+        'hello',
+        'success',
+        'passed',
+    ))
+
+
+def extract_plain_response_text(payload, raw_body: str) -> str:
+    if isinstance(payload, dict):
+        error_value = payload.get('error')
+        if isinstance(error_value, dict):
+            return str(error_value.get('message') or error_value.get('type') or error_value.get('code') or raw_body)
+        return str(payload.get('message') or payload.get('detail') or payload.get('text') or error_value or raw_body)
+    return raw_body
 
 
 def classify_api_result(http_status: int | None, saw_success: bool, error_text: str) -> str:
@@ -964,25 +994,12 @@ def run_account_test(row):
                     if not saw_success and not error_text:
                         error_text = shorten_detail(result_text) or 'test did not complete successfully'
                 else:
-                    if 'text/plain' in content_type or 'application/json' in content_type or not content_type:
-                        try:
-                            payload = json.loads(raw_body)
-                        except Exception:
-                            payload = {}
-                        if isinstance(payload, dict):
-                            text = payload.get('message') or payload.get('error') or payload.get('detail') or payload.get('text') or raw_body
-                            result_text = result_text or shorten_detail(text)
-                            error_text = error_text or shorten_detail(text)
-                            if any(keyword in shorten_detail(text).lower() for keyword in ('success', 'ok', 'passed', 'done')):
-                                saw_success = True
-                            elif any(keyword in shorten_detail(text).lower() for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'rate limit', 'too many request')):
-                                error_text = shorten_detail(text)
-                        else:
-                            text = raw_body
-                            result_text = result_text or shorten_detail(text)
-                            error_text = error_text or shorten_detail(text)
+                    text = extract_plain_response_text(payload, raw_body)
+                    result_text = result_text or shorten_detail(text)
+                    if has_success_text(text):
+                        saw_success = True
                     else:
-                        error_text = f"unexpected content-type: {content_type or 'missing'}"
+                        error_text = error_text or shorten_detail(text)
         except urllib.error.HTTPError as err:
             http_status = err.code
             error_text = response_error_detail(err.code, err.read())
