@@ -1073,12 +1073,21 @@ def run_account_test(row):
     enable_success = False
     enable_detail = ''
     enable_status = None
+    keep_inactive_attempted = False
+    keep_inactive_success = False
+    keep_inactive_detail = ''
+    keep_inactive_status = None
 
     if source_status == 'inactive' and native_status == 'success':
         enable_attempted = True
         enable_success, enable_status, enable_detail = enable_account(int(account_id))
         if not enable_success:
             enable_detail = shorten_detail(enable_detail or (f'HTTP {enable_status}' if enable_status else 'enable request failed'))
+    elif source_status == 'inactive':
+        keep_inactive_attempted = True
+        keep_inactive_success, keep_inactive_status, keep_inactive_detail = disable_account(int(account_id))
+        if not keep_inactive_success:
+            keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
     elif disable_needed:
         disable_attempted = True
         disable_success, disable_status, disable_detail = disable_account(int(account_id))
@@ -1104,6 +1113,10 @@ def run_account_test(row):
         'enable_success': enable_success,
         'enable_status': enable_status,
         'enable_detail': enable_detail,
+        'keep_inactive_attempted': keep_inactive_attempted,
+        'keep_inactive_success': keep_inactive_success,
+        'keep_inactive_status': keep_inactive_status,
+        'keep_inactive_detail': keep_inactive_detail,
     }
 
 
@@ -1127,6 +1140,11 @@ for batch_start in range(0, len(rows), batch_size):
                     message += ' enable=success'
                 else:
                     message += f" enable=failed enable_detail={item['enable_detail']}"
+            if item['keep_inactive_attempted']:
+                if item['keep_inactive_success']:
+                    message += ' keep_inactive=success'
+                else:
+                    message += f" keep_inactive=failed keep_inactive_detail={item['keep_inactive_detail']}"
             if item['disable_attempted']:
                 if item['disable_success']:
                     message += ' disable=success'
