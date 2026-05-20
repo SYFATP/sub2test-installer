@@ -855,7 +855,9 @@ def should_disable_account(account_state: dict, source_status: str, native_statu
     streak_count = prior_streak
     already_disabled = bool(account_state.get('disabled_by_sub2test_at'))
 
-    if native_status == 'success':
+    if source_status == 'inactive':
+        streak_count = 0
+    elif native_status == 'success':
         streak_count = 0
     elif native_status == 'error':
         streak_count = prior_streak + 1
@@ -868,6 +870,7 @@ def apply_account_state(account_state: dict, native_status: str, streak_count: i
     account_state['consecutive_error_count'] = max(streak_count, 0)
     account_state['last_native_status'] = native_status
     if disable_success:
+        account_state['consecutive_error_count'] = 0
         account_state['disabled_by_sub2test_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     if enable_success:
         account_state.pop('disabled_by_sub2test_at', None)
