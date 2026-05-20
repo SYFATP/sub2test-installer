@@ -1,6 +1,6 @@
 # sub2test-installer
 
-Current release: `0.1.2`
+Current release: `0.1.3`
 
 - [中文](#中文)
 - [English](#english)
@@ -10,7 +10,7 @@ Current release: `0.1.2`
 
 ## 中文
 
-`sub2test-installer.sh` 当前发布版本为 `0.1.2`。
+`sub2test-installer.sh` 当前发布版本为 `0.1.3`。
 
 `sub2test-installer.sh` 用来给 Sub2API 部署一套独立的 `sub2test` 运行环境：自动发现数据库配置、调用管理端账号测活接口、把连续 `error` 的账号在达到阈值后自动设为 `disabled`，并可通过 systemd timer 定时执行。
 
@@ -172,6 +172,54 @@ cat /opt/sub2test/state.json
 
 ### Release notes
 
+#### v0.1.3
+
+**中文**
+
+- 修复生成出来的 `sub2test` 运行脚本缺少版本号和项目地址变量的问题，避免 `show-config` 在 `set -u` 下报 `unbound variable`
+- 全量任务调度模式改成子菜单选择，并补齐中英文翻译
+- 选择全量任务调度模式后，只继续显示对应的下一级配置项
+- 清理全量任务菜单里的手动执行入口，统一收口到“手动执行菜单”
+
+升级命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
+chmod +x /tmp/sub2test-installer.sh
+sudo bash /tmp/sub2test-installer.sh --force
+sudo systemctl daemon-reload
+sudo systemctl restart sub2test.timer
+sudo systemctl restart sub2test-untested.timer
+```
+
+注意：
+
+- 重启 `sub2test.service` 或 `sub2test-untested.service` 会立即执行一次任务
+- 如果只想刷新自动调度，不想立刻执行，请只重启对应的 `.timer`
+
+**English**
+
+- Fixed missing version and project URL variables in the generated `sub2test` runtime script so `show-config` no longer fails under `set -u`
+- Changed full-task schedule mode selection to a translated submenu
+- After choosing a full-task schedule mode, only the matching follow-up setting is prompted
+- Removed manual execution entries from the full-task menu and kept them only in the shared manual-run menu
+
+Upgrade command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
+chmod +x /tmp/sub2test-installer.sh
+sudo bash /tmp/sub2test-installer.sh --force
+sudo systemctl daemon-reload
+sudo systemctl restart sub2test.timer
+sudo systemctl restart sub2test-untested.timer
+```
+
+Notes:
+
+- Restarting `sub2test.service` or `sub2test-untested.service` will execute a task immediately
+- If you only want to refresh scheduling without triggering a run, restart only the corresponding `.timer`
+
 #### v0.1.2
 
 **中文**
@@ -276,7 +324,7 @@ Notes:
 
 ## English
 
-Current `sub2test-installer.sh` release: `0.1.2`.
+Current `sub2test-installer.sh` release: `0.1.3`.
 
 `sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
 

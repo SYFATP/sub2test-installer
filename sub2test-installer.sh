@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SUB2TEST_VERSION="0.1.2"
+SUB2TEST_VERSION="0.1.3"
 SUB2TEST_PROJECT_URL="https://github.com/SYFATP/sub2test-installer"
 INSTALL_ROOT="/opt/sub2test"
 CONFIG_DIR="/etc/sub2api"
