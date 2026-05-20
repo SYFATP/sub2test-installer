@@ -596,7 +596,7 @@ build_account_where_clause() {
       printf "%s" "status = 'error'"
       ;;
     disabled)
-      printf "%s" "status = 'disabled'"
+      printf "%s" "status = 'inactive'"
       ;;
     *)
       printf "%s" "(status = 'error' OR (status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())))"
@@ -677,7 +677,7 @@ if mode == 'error':
     where_clause = "status = 'error'"
     order_clause = "priority ASC, id ASC"
 elif mode == 'disabled':
-    where_clause = "status = 'disabled'"
+    where_clause = "status = 'inactive'"
     order_clause = "priority ASC, id ASC"
 else:
     where_clause = """
@@ -860,7 +860,7 @@ def should_disable_account(account_state: dict, source_status: str, native_statu
     elif native_status == 'error':
         streak_count = prior_streak + 1
 
-    disable_needed = source_status != 'disabled' and native_status == 'error' and streak_count >= threshold and not already_disabled
+    disable_needed = source_status != 'inactive' and native_status == 'error' and streak_count >= threshold and not already_disabled
     return prior_streak, streak_count, disable_needed
 
 
@@ -910,7 +910,7 @@ def update_account_status(account_id: int, status: str):
 
 
 def disable_account(account_id: int):
-    return update_account_status(account_id, 'disabled')
+    return update_account_status(account_id, 'inactive')
 
 
 def enable_account(account_id: int):
@@ -1074,7 +1074,7 @@ def run_account_test(row):
     enable_detail = ''
     enable_status = None
 
-    if source_status == 'disabled' and native_status == 'success':
+    if source_status == 'inactive' and native_status == 'success':
         enable_attempted = True
         enable_success, enable_status, enable_detail = enable_account(int(account_id))
         if not enable_success:
