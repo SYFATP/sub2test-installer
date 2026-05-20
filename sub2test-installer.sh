@@ -590,8 +590,34 @@ print('preflight checks passed')
 PY_PREFLIGHT_RUNTIME
 }
 
+build_account_where_clause() {
+  case "${1:-all}" in
+    error)
+      printf "%s" "status = 'error'"
+      ;;
+    disabled)
+      printf "%s" "status = 'disabled'"
+      ;;
+    *)
+      printf "%s" "(status = 'error' OR (status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())))"
+      ;;
+  esac
+}
+
+build_account_order_clause() {
+  case "${1:-all}" in
+    error|disabled)
+      printf "%s" "priority ASC, id ASC"
+      ;;
+    *)
+      printf "%s" "CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC"
+      ;;
+  esac
+}
+
 run_health_check() {
   preflight_runtime
+  local mode="${1:-all}"
   local accounts_json=""
   local accounts_tsv=""
   cleanup_run_health_check() {
@@ -605,7 +631,7 @@ run_health_check() {
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, status FROM accounts WHERE deleted_at IS NULL AND (status = 'error' OR (status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))) ORDER BY CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC" > "$accounts_tsv"
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), platform, type, status FROM accounts WHERE deleted_at IS NULL AND $(build_account_where_clause \"$mode\") ORDER BY $(build_account_order_clause \"$mode\")" > "$accounts_tsv"
     python3 - "$accounts_tsv" "$accounts_json" <<'PY_EXPORT_CONTAINER_ACCOUNTS'
 import json
 import sys
@@ -631,7 +657,7 @@ with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', enco
         }, ensure_ascii=False) + '\n')
 PY_EXPORT_CONTAINER_ACCOUNTS
   else
-    python3 - "$accounts_json" <<'PY_EXPORT_ACCOUNTS'
+    python3 - "$accounts_json" "$mode" <<'PY_EXPORT_ACCOUNTS'
 import json
 import os
 import sys
@@ -639,6 +665,26 @@ import sys
 import psycopg2
 
 output_path = sys.argv[1]
+mode = sys.argv[2]
+
+if mode == 'error':
+    where_clause = "status = 'error'"
+    order_clause = "priority ASC, id ASC"
+elif mode == 'disabled':
+    where_clause = "status = 'disabled'"
+    order_clause = "priority ASC, id ASC"
+else:
+    where_clause = """
+    (
+      status = 'error'
+      OR (
+        status = 'active'
+        AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW())
+        AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())
+      )
+    )
+    """
+    order_clause = "CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC"
 
 conn = psycopg2.connect(
     host=os.environ['SUB2TEST_DB_HOST'],
@@ -650,19 +696,12 @@ conn = psycopg2.connect(
 )
 cur = conn.cursor()
 cur.execute(
-    """
+    f"""
     SELECT id, name, platform, type, status
     FROM accounts
     WHERE deleted_at IS NULL
-      AND (
-        status = 'error'
-        OR (
-          status = 'active'
-          AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW())
-          AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())
-        )
-      )
-    ORDER BY CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC
+      AND {where_clause}
+    ORDER BY {order_clause}
     """
 )
 rows = cur.fetchall()
@@ -805,7 +844,7 @@ def normalize_int(value, default=0):
         return default
 
 
-def should_disable_account(account_state: dict, native_status: str, threshold: int):
+def should_disable_account(account_state: dict, source_status: str, native_status: str, threshold: int):
     prior_streak = max(normalize_int(account_state.get('consecutive_error_count'), 0), 0)
     streak_count = prior_streak
     already_disabled = bool(account_state.get('disabled_by_sub2test_at'))
@@ -815,15 +854,17 @@ def should_disable_account(account_state: dict, native_status: str, threshold: i
     elif native_status == 'error':
         streak_count = prior_streak + 1
 
-    disable_needed = native_status == 'error' and streak_count >= threshold and not already_disabled
+    disable_needed = source_status != 'disabled' and native_status == 'error' and streak_count >= threshold and not already_disabled
     return prior_streak, streak_count, disable_needed
 
 
-def apply_account_state(account_state: dict, native_status: str, streak_count: int, disable_success: bool):
+def apply_account_state(account_state: dict, native_status: str, streak_count: int, disable_success: bool, enable_success: bool):
     account_state['consecutive_error_count'] = max(streak_count, 0)
     account_state['last_native_status'] = native_status
     if disable_success:
         account_state['disabled_by_sub2test_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    if enable_success:
+        account_state.pop('disabled_by_sub2test_at', None)
 
 
 def prune_state(state: dict, keep_ids):
@@ -836,8 +877,8 @@ def prune_state(state: dict, keep_ids):
         accounts.pop(key, None)
 
 
-def disable_account(account_id: int):
-    body = json.dumps({'status': 'disabled'}).encode('utf-8')
+def update_account_status(account_id: int, status: str):
+    body = json.dumps({'status': status}).encode('utf-8')
     headers = {
         'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
         'Content-Type': 'application/json',
@@ -859,7 +900,15 @@ def disable_account(account_id: int):
             return False, err.code, response_error_detail(err.code, err.read())
         except Exception as exc:
             return False, None, safe_exception_text(exc)
-    return False, None, 'disable request failed'
+    return False, None, f'{status} request failed'
+
+
+def disable_account(account_id: int):
+    return update_account_status(account_id, 'disabled')
+
+
+def enable_account(account_id: int):
+    return update_account_status(account_id, 'active')
 
 
 state = load_state(state_file)
@@ -1009,13 +1058,22 @@ def run_account_test(row):
     latency_ms = int((time.time() - started) * 1000)
     native_status = classify_api_result(http_status, saw_success, error_text)
     account_state = get_account_state(state, account_id)
-    _, streak_count, disable_needed = should_disable_account(account_state, native_status, error_streak_threshold)
+    _, streak_count, disable_needed = should_disable_account(account_state, source_status, native_status, error_streak_threshold)
     disable_attempted = False
     disable_success = False
     disable_detail = ''
     disable_status = None
+    enable_attempted = False
+    enable_success = False
+    enable_detail = ''
+    enable_status = None
 
-    if disable_needed:
+    if source_status == 'disabled' and native_status == 'success':
+        enable_attempted = True
+        enable_success, enable_status, enable_detail = enable_account(int(account_id))
+        if not enable_success:
+            enable_detail = shorten_detail(enable_detail or (f'HTTP {enable_status}' if enable_status else 'enable request failed'))
+    elif disable_needed:
         disable_attempted = True
         disable_success, disable_status, disable_detail = disable_account(int(account_id))
         if not disable_success:
@@ -1036,6 +1094,10 @@ def run_account_test(row):
         'disable_success': disable_success,
         'disable_status': disable_status,
         'disable_detail': disable_detail,
+        'enable_attempted': enable_attempted,
+        'enable_success': enable_success,
+        'enable_status': enable_status,
+        'enable_detail': enable_detail,
     }
 
 
@@ -1049,11 +1111,16 @@ for batch_start in range(0, len(rows), batch_size):
         status_counts[item['native_status']] += 1
         processed_account_ids.add(item['account_id'])
         account_state = get_account_state(state, item['account_id'])
-        apply_account_state(account_state, item['native_status'], item['streak_count'], item['disable_success'])
+        apply_account_state(account_state, item['native_status'], item['streak_count'], item['disable_success'], item['enable_success'])
         result = 'success' if item['saw_success'] else 'failed'
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
             message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} streak={item['streak_count']} detail={item['detail']}"
+            if item['enable_attempted']:
+                if item['enable_success']:
+                    message += ' enable=success'
+                else:
+                    message += f" enable=failed enable_detail={item['enable_detail']}"
             if item['disable_attempted']:
                 if item['disable_success']:
                     message += ' disable=success'
@@ -1214,11 +1281,19 @@ uninstall_self() {
 
 run_once() {
   . "$SUB2TEST_CONFIG_FILE"
+  local mode="${1:-all}"
+  case "$mode" in
+    all|error|disabled) ;;
+    *)
+      echo "Usage: sub2test run-once [all|error|disabled]" >&2
+      return 1
+      ;;
+  esac
   export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
   export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
   export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_ERROR_STREAK_THRESHOLD SUB2TEST_STATE_FILE
   export SUB2TEST_SLEEP_MIN_SECONDS SUB2TEST_SLEEP_MAX_SECONDS
-  run_health_check
+  run_health_check "$mode"
 }
 
 menu() {
@@ -1228,31 +1303,35 @@ menu() {
     echo "1) 启用自动任务"
     echo "2) 禁用自动任务"
     echo "3) 编辑参数"
-    echo "4) 立即执行一次"
-    echo "5) 查看当前配置"
-    echo "6) 卸载脚本和定时器"
-    echo "7) 退出"
+    echo "4) 立即执行一次（全部）"
+    echo "5) 仅测试 error 账号"
+    echo "6) 仅测试 disabled 账号"
+    echo "7) 查看当前配置"
+    echo "8) 卸载脚本和定时器"
+    echo "9) 退出"
     read -r -p "> " choice
     case "$choice" in
       1) enable_task ;;
       2) disable_task ;;
       3) edit_config ;;
-      4) run_once ;;
-      5) show_config ;;
-      6) uninstall_self; exit 0 ;;
-      7) exit 0 ;;
+      4) run_once all ;;
+      5) run_once error ;;
+      6) run_once disabled ;;
+      7) show_config ;;
+      8) uninstall_self; exit 0 ;;
+      9) exit 0 ;;
       *) echo "无效选项" ;;
     esac
   done
 }
 
 case "${1:-menu}" in
-  run-once) run_once ;;
+  run-once) run_once "${2:-all}" ;;
   show-config) show_config ;;
   enable) enable_task ;;
   disable) disable_task ;;
   menu) menu ;;
-  *) echo "Usage: sub2test [menu|run-once|show-config|enable|disable]" >&2; exit 1 ;;
+  *) echo "Usage: sub2test [menu|run-once [all|error|disabled]|show-config|enable|disable]" >&2; exit 1 ;;
 esac
 '''
 content = content.replace('__CONFIG_FILE__', config_file)
