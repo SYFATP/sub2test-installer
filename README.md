@@ -4,6 +4,7 @@ Current release: `0.1.1`
 
 - [中文](#中文)
 - [English](#english)
+- [Release notes](#release-notes)
 
 ---
 
@@ -168,6 +169,58 @@ cat /opt/sub2test/state.json
 - 如果重装前删除 `/opt/sub2test`，默认也会删除旧的 `state.json`，连续错误计数会重新开始
 - `sub2test show-config` 中 `SUB2TEST_ADMIN_API_KEY=***set***` 只是脱敏显示，不代表真实值被改写
 - `OnCalendar` 使用服务器本地时区，固定时间执行前请确认系统时区正确
+
+### Release notes
+
+#### v0.1.1
+
+**中文**
+
+- 修复 `untested` 自动任务运行时报错 `NameError: mode is not defined`
+- 修复普通非 SSE 响应分支的解析问题，避免全量任务和未测任务在共用运行路径上崩溃
+- 保持 `untested` 模式按 `state.json` 过滤从未测试过的 active 账号
+- 保持自动任务执行后正常写入 `state.json`
+- 已在线验证全量自动任务与未测自动任务均可正常运行
+
+升级命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
+chmod +x /tmp/sub2test-installer.sh
+sudo bash /tmp/sub2test-installer.sh --force
+sudo systemctl daemon-reload
+sudo systemctl restart sub2test.timer
+sudo systemctl restart sub2test-untested.timer
+```
+
+注意：
+
+- 重启 `sub2test.service` 或 `sub2test-untested.service` 会立即执行一次任务
+- 如果只想刷新自动调度，不想立刻执行，请只重启对应的 `.timer`
+
+**English**
+
+- Fixed the `NameError: mode is not defined` crash in the `untested` scheduled task
+- Fixed plain non-SSE response parsing so shared runtime paths no longer crash for full and untested runs
+- Preserved `untested` filtering based on `state.json` for active accounts that have never been tested
+- Preserved normal `state.json` updates after scheduled task execution
+- Verified online that both full and untested scheduled tasks now run successfully
+
+Upgrade command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
+chmod +x /tmp/sub2test-installer.sh
+sudo bash /tmp/sub2test-installer.sh --force
+sudo systemctl daemon-reload
+sudo systemctl restart sub2test.timer
+sudo systemctl restart sub2test-untested.timer
+```
+
+Notes:
+
+- Restarting `sub2test.service` or `sub2test-untested.service` will execute a task immediately
+- If you only want to refresh scheduling without triggering a run, restart only the corresponding `.timer`
 
 ---
 
