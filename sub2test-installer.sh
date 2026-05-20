@@ -1272,7 +1272,7 @@ lib_path.write_text(content, encoding='utf-8')
 PY
 chmod +x "$LIB_FILE"
 
-python3 - "$BIN_FILE" "$CONFIG_FILE" "$DEFAULT_COMPOSE_FILE" "$DEFAULT_APP_CONFIG_FILE" "$LINK_FILE" "$INSTALL_ROOT" <<'PY'
+python3 - "$BIN_FILE" "$CONFIG_FILE" "$DEFAULT_COMPOSE_FILE" "$DEFAULT_APP_CONFIG_FILE" "$LINK_FILE" "$INSTALL_ROOT" "$SUB2TEST_VERSION" "$SUB2TEST_PROJECT_URL" <<'PY'
 from pathlib import Path
 import sys
 
@@ -1282,10 +1282,14 @@ compose_file = sys.argv[3]
 app_config_file = sys.argv[4]
 link_file = sys.argv[5]
 install_root = sys.argv[6]
+script_version = sys.argv[7]
+project_url = sys.argv[8]
 
 content = '''#!/bin/bash
 set -euo pipefail
 
+SUB2TEST_VERSION="__SCRIPT_VERSION__"
+SUB2TEST_PROJECT_URL="__PROJECT_URL__"
 export SUB2TEST_CONFIG_FILE="${SUB2TEST_CONFIG_FILE:-__CONFIG_FILE__}"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s\n' "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
@@ -1951,6 +1955,8 @@ content = content.replace('__COMPOSE_FILE__', compose_file)
 content = content.replace('__APP_CONFIG_FILE__', app_config_file)
 content = content.replace('__LINK_FILE__', link_file)
 content = content.replace('__INSTALL_ROOT__', install_root)
+content = content.replace('__SCRIPT_VERSION__', script_version)
+content = content.replace('__PROJECT_URL__', project_url)
 bin_path.write_text(content, encoding='utf-8')
 PY
 chmod +x "$BIN_FILE"
