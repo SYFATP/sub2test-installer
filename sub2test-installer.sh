@@ -371,6 +371,7 @@ Description=Run sub2test for untested active accounts periodically
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}")min
+AccuracySec=1s
 Persistent=true
 RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}")
 Unit=sub2test-untested.service
@@ -1684,6 +1685,7 @@ choose_full_schedule_mode() {
     4)
       save_config_value SUB2TEST_SCHEDULE daily
       save_config_value SUB2TEST_DAILY_AT ""
+      save_config_value SUB2TEST_EVERY_HOURS ""
       edit_value SUB2TEST_EVERY_HOURS "${SUB2TEST_EVERY_HOURS:-}" "$(t label_full_every_hours)"
       ;;
     5)
@@ -2056,6 +2058,8 @@ WantedBy=timers.target
 EOF
 
 ln -sf "$BIN_FILE" "$LINK_FILE"
+render_timer
+render_untested_timer
 systemctl daemon-reload
 
 echo "sub2test installed"
