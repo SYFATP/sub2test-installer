@@ -2058,8 +2058,11 @@ WantedBy=timers.target
 EOF
 
 ln -sf "$BIN_FILE" "$LINK_FILE"
-render_timer
-render_untested_timer
+/usr/local/bin/sub2test show-config >/dev/null 2>&1 || true
+/usr/local/bin/sub2test enable >/dev/null 2>&1 || true
+if grep -q '^SUB2TEST_UNTESTED_ENABLED=true$' "$CONFIG_FILE"; then
+  /usr/local/bin/sub2test enable-untested >/dev/null 2>&1 || true
+fi
 systemctl daemon-reload
 
 echo "sub2test installed"
