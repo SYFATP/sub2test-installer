@@ -1396,6 +1396,15 @@ t() {
     en:edit_intro) echo "Starting interactive edit. Press Enter to keep the current value." ;;
     en:config_after) echo "Updated task summary:" ;;
     en:invalid_option) echo "Invalid option" ;;
+    en:manual_conflict_full_running) echo "Full automatic task is currently running." ;;
+    en:manual_conflict_full_waiting) echo "Full automatic task is queued and waiting for the shared lock." ;;
+    en:manual_conflict_untested_running) echo "Untested automatic task is currently running." ;;
+    en:manual_conflict_untested_waiting) echo "Untested automatic task is queued and waiting for the shared lock." ;;
+    en:manual_conflict_prompt) echo "Stop the running or queued automatic task(s) and continue with this manual run? [y/N]" ;;
+    en:manual_conflict_cancelled) echo "Manual run cancelled." ;;
+    en:manual_conflict_stopping) echo "Stopping automatic task(s)..." ;;
+    en:manual_conflict_stopped) echo "Automatic task(s) stopped. Starting manual run." ;;
+    en:manual_conflict_stop_failed) echo "Automatic task(s) are still stopping or waiting. Please try again." ;;
     en:menu_enable_full) echo "Enable full automatic task" ;;
     en:menu_disable_full) echo "Disable full automatic task" ;;
     en:menu_enable_untested) echo "Enable untested automatic task" ;;
@@ -1404,7 +1413,7 @@ t() {
     en:menu_full_task) echo "Full task menu" ;;
     en:menu_untested_task) echo "Untested task menu" ;;
     en:menu_manual_run) echo "Manual run menu" ;;
-    en:menu_back) echo "Back" ;;
+    en:menu_back) echo "Back (0)" ;;
     en:full_menu_title) echo "Full task menu" ;;
     en:untested_menu_title) echo "Untested task menu" ;;
     en:manual_menu_title) echo "Manual run menu" ;;
@@ -1438,7 +1447,7 @@ t() {
     en:language_option_en) echo "English" ;;
     en:language_saved) echo "Interface language updated." ;;
     en:menu_uninstall) echo "Uninstall script and timers" ;;
-    en:menu_exit) echo "Exit" ;;
+    en:menu_exit) echo "Exit (0)" ;;
     en:label_deploy_mode) echo "Deploy mode (usually keep compose)" ;;
     en:label_compose_file) echo "Path to docker-compose.yml" ;;
     en:label_app_config_file) echo "Path to Sub2API config file" ;;
@@ -1493,6 +1502,15 @@ t() {
     zh:edit_intro) echo "下面开始逐项编辑；直接回车表示保持当前值。" ;;
     zh:config_after) echo "修改后的自动任务说明：" ;;
     zh:invalid_option) echo "无效选项" ;;
+    zh:manual_conflict_full_running) echo "全量自动任务正在执行。" ;;
+    zh:manual_conflict_full_waiting) echo "全量自动任务正在排队等待共享锁。" ;;
+    zh:manual_conflict_untested_running) echo "未测自动任务正在执行。" ;;
+    zh:manual_conflict_untested_waiting) echo "未测自动任务正在排队等待共享锁。" ;;
+    zh:manual_conflict_prompt) echo "是否停止这些正在执行或排队的自动任务，并继续本次手动执行？[y/N]" ;;
+    zh:manual_conflict_cancelled) echo "已取消本次手动执行。" ;;
+    zh:manual_conflict_stopping) echo "正在停止自动任务..." ;;
+    zh:manual_conflict_stopped) echo "自动任务已停止，开始执行手动任务。" ;;
+    zh:manual_conflict_stop_failed) echo "自动任务仍在停止或等待中，请稍后重试。" ;;
     zh:menu_enable_full) echo "启用自动任务" ;;
     zh:menu_disable_full) echo "禁用自动任务" ;;
     zh:menu_enable_untested) echo "启用未测试 active 账号自动任务" ;;
@@ -1501,7 +1519,7 @@ t() {
     zh:menu_full_task) echo "全量任务菜单" ;;
     zh:menu_untested_task) echo "未测任务菜单" ;;
     zh:menu_manual_run) echo "手动执行菜单" ;;
-    zh:menu_back) echo "返回上一级" ;;
+    zh:menu_back) echo "返回上一级（0）" ;;
     zh:full_menu_title) echo "全量任务菜单" ;;
     zh:untested_menu_title) echo "未测任务菜单" ;;
     zh:manual_menu_title) echo "手动执行菜单" ;;
@@ -1535,7 +1553,7 @@ t() {
     zh:language_option_en) echo "English" ;;
     zh:language_saved) echo "界面语言已更新。" ;;
     zh:menu_uninstall) echo "卸载脚本和定时器" ;;
-    zh:menu_exit) echo "退出" ;;
+    zh:menu_exit) echo "退出（0）" ;;
     zh:label_deploy_mode) echo "部署方式（一般保持 compose）" ;;
     zh:label_compose_file) echo "docker-compose.yml 路径" ;;
     zh:label_app_config_file) echo "Sub2API 配置文件路径" ;;
@@ -1893,6 +1911,105 @@ switch_language() {
   esac
 }
 
+service_active_state() {
+  local service="$1"
+  systemctl show "$service" --property=ActiveState --value 2>/dev/null || true
+}
+
+service_sub_state() {
+  local service="$1"
+  systemctl show "$service" --property=SubState --value 2>/dev/null || true
+}
+
+service_is_running() {
+  local service="$1"
+  [ "$(service_active_state "$service")" = "active" ]
+}
+
+service_is_waiting() {
+  local service="$1"
+  local active_state
+  local sub_state
+  active_state="$(service_active_state "$service")"
+  sub_state="$(service_sub_state "$service")"
+  [ "$active_state" = "activating" ] || [ "$sub_state" = "start" ]
+}
+
+print_automatic_task_conflicts() {
+  local has_conflict=1
+  if service_is_running sub2test.service; then
+    echo "$(t manual_conflict_full_running)"
+    has_conflict=0
+  elif service_is_waiting sub2test.service; then
+    echo "$(t manual_conflict_full_waiting)"
+    has_conflict=0
+  fi
+  if service_is_running sub2test-untested.service; then
+    echo "$(t manual_conflict_untested_running)"
+    has_conflict=0
+  elif service_is_waiting sub2test-untested.service; then
+    echo "$(t manual_conflict_untested_waiting)"
+    has_conflict=0
+  fi
+  return "$has_conflict"
+}
+
+automatic_tasks_conflicting() {
+  if service_is_running sub2test.service || service_is_waiting sub2test.service; then
+    return 0
+  fi
+  if service_is_running sub2test-untested.service || service_is_waiting sub2test-untested.service; then
+    return 0
+  fi
+  return 1
+}
+
+confirm_yes() {
+  local answer
+  read -r -p "$1 " answer
+  case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
+    y|yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+stop_automatic_tasks_for_manual_run() {
+  local attempt
+  systemctl stop sub2test.service >/dev/null 2>&1 || true
+  systemctl stop sub2test-untested.service >/dev/null 2>&1 || true
+  for attempt in 1 2 3 4 5; do
+    if ! automatic_tasks_conflicting; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+run_manual_once() {
+  local mode="$1"
+  if ! automatic_tasks_conflicting; then
+    run_once "$mode"
+    return 0
+  fi
+
+  echo
+  print_automatic_task_conflicts || true
+  if ! confirm_yes "$(t manual_conflict_prompt)"; then
+    echo "$(t manual_conflict_cancelled)"
+    return 0
+  fi
+
+  echo "$(t manual_conflict_stopping)"
+  if ! stop_automatic_tasks_for_manual_run; then
+    echo "$(t manual_conflict_stop_failed)"
+    return 1
+  fi
+
+  echo "$(t manual_conflict_stopped)"
+  run_once "$mode"
+}
+
 enable_task() {
   save_config_value SUB2TEST_ENABLED true
   . "$SUB2TEST_CONFIG_FILE"
@@ -1948,14 +2065,14 @@ full_task_menu() {
     echo "2) $(t full_menu_enable)"
     echo "3) $(t full_menu_disable)"
     echo "4) $(t full_menu_show_log)"
-    echo "5) $(t menu_back)"
+    echo "0) $(t menu_back)"
     read -r -p "> " choice
     case "$choice" in
       1) edit_full_task_config ;;
       2) enable_task ;;
       3) disable_task ;;
       4) show_last_full_log ;;
-      5) return 0 ;;
+      0) return 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
   done
@@ -1972,14 +2089,14 @@ untested_task_menu() {
     echo "2) $(t untested_menu_enable)"
     echo "3) $(t untested_menu_disable)"
     echo "4) $(t untested_menu_show_log)"
-    echo "5) $(t menu_back)"
+    echo "0) $(t menu_back)"
     read -r -p "> " choice
     case "$choice" in
       1) edit_untested_task_config ;;
       2) enable_untested_task ;;
       3) disable_untested_task ;;
       4) show_last_untested_log ;;
-      5) return 0 ;;
+      0) return 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
   done
@@ -1995,14 +2112,14 @@ manual_run_menu() {
     echo "2) $(t menu_run_error)"
     echo "3) $(t menu_run_disabled)"
     echo "4) $(t menu_run_untested)"
-    echo "5) $(t menu_back)"
+    echo "0) $(t menu_back)"
     read -r -p "> " choice
     case "$choice" in
-      1) run_once all ;;
-      2) run_once error ;;
-      3) run_once disabled ;;
-      4) run_once untested ;;
-      5) return 0 ;;
+      1) run_manual_once all ;;
+      2) run_manual_once error ;;
+      3) run_manual_once disabled ;;
+      4) run_manual_once untested ;;
+      0) return 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
   done
@@ -2049,7 +2166,7 @@ menu() {
     echo "5) $(t menu_show_config)"
     echo "6) $(t menu_switch_language)"
     echo "7) $(t menu_uninstall)"
-    echo "8) $(t menu_exit)"
+    echo "0) $(t menu_exit)"
     read -r -p "> " choice
     case "$choice" in
       1) edit_config ;;
@@ -2059,7 +2176,7 @@ menu() {
       5) show_config ;;
       6) switch_language ;;
       7) uninstall_self; exit 0 ;;
-      8) exit 0 ;;
+      0) exit 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
   done
