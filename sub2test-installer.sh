@@ -1393,6 +1393,19 @@ t() {
     en:enabled_weekly) echo "Enabled: runs weekly%s" ;;
     en:enabled_daily_fallback) echo "Enabled: runs daily%s" ;;
     en:config_intro) echo "Current task summary:" ;;
+    en:runtime_overview_title) echo "Runtime overview:" ;;
+    en:runtime_status_label) echo "Current status" ;;
+    en:runtime_last_run_label) echo "Last run" ;;
+    en:runtime_last_result_label) echo "Last summary" ;;
+    en:runtime_never_ran) echo "No execution record" ;;
+    en:runtime_no_summary) echo "No summary recorded" ;;
+    en:runtime_status_running) echo "Running" ;;
+    en:runtime_status_waiting) echo "Waiting for shared lock" ;;
+    en:runtime_status_failed) echo "Failed" ;;
+    en:runtime_status_inactive) echo "Idle" ;;
+    en:runtime_status_unknown) echo "Unknown" ;;
+    en:manual_lock_starting) echo "Starting manual run with shared lock." ;;
+    en:manual_lock_failed) echo "Manual run failed to acquire the shared lock or exited with an error." ;;
     en:edit_intro) echo "Starting interactive edit. Press Enter to keep the current value." ;;
     en:config_after) echo "Updated task summary:" ;;
     en:invalid_option) echo "Invalid option" ;;
@@ -1499,6 +1512,19 @@ t() {
     zh:enabled_weekly) echo "已启用：每周自动执行一次%s" ;;
     zh:enabled_daily_fallback) echo "已启用：每天自动执行一次%s" ;;
     zh:config_intro) echo "当前自动任务说明：" ;;
+    zh:runtime_overview_title) echo "运行概览：" ;;
+    zh:runtime_status_label) echo "当前状态" ;;
+    zh:runtime_last_run_label) echo "上次执行时间" ;;
+    zh:runtime_last_result_label) echo "上次汇总结果" ;;
+    zh:runtime_never_ran) echo "暂无执行记录" ;;
+    zh:runtime_no_summary) echo "最近一次未产生汇总" ;;
+    zh:runtime_status_running) echo "正在执行" ;;
+    zh:runtime_status_waiting) echo "排队等待共享锁" ;;
+    zh:runtime_status_failed) echo "执行失败" ;;
+    zh:runtime_status_inactive) echo "空闲" ;;
+    zh:runtime_status_unknown) echo "未知" ;;
+    zh:manual_lock_starting) echo "开始通过共享锁执行手动任务。" ;;
+    zh:manual_lock_failed) echo "手动任务获取共享锁失败或执行出错。" ;;
     zh:edit_intro) echo "下面开始逐项编辑；直接回车表示保持当前值。" ;;
     zh:config_after) echo "修改后的自动任务说明：" ;;
     zh:invalid_option) echo "无效选项" ;;
@@ -1813,6 +1839,9 @@ show_task_summaries() {
   echo "$(t config_intro)"
   echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
   echo "- $(t untested_task)：$(untested_schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
+  echo "$(t runtime_overview_title)"
+  show_service_runtime_summary sub2test.service "$(t full_task)"
+  show_service_runtime_summary sub2test-untested.service "$(t untested_task)"
 }
 
 edit_global_config() {
@@ -1935,6 +1964,91 @@ service_is_waiting() {
   [ "$active_state" = "activating" ] || [ "$sub_state" = "start" ]
 }
 
+service_runtime_status_label() {
+  local service="$1"
+  local active_state
+  active_state="$(service_active_state "$service")"
+
+  if service_is_running "$service"; then
+    t runtime_status_running
+    return 0
+  fi
+
+  if service_is_waiting "$service"; then
+    t runtime_status_waiting
+    return 0
+  fi
+
+  case "$active_state" in
+    failed)
+      t runtime_status_failed
+      ;;
+    inactive)
+      t runtime_status_inactive
+      ;;
+    *)
+      t runtime_status_unknown
+      ;;
+  esac
+}
+
+last_service_summary_entries() {
+  local service="$1"
+  journalctl -u "$service" -n 200 --no-pager -o short-iso 2>/dev/null | grep 'summary ' || true
+}
+
+last_service_summary_time() {
+  local service="$1"
+  local main_line
+  main_line="$(last_service_main_summary_line "$service")"
+  if [ -z "$main_line" ]; then
+    return 1
+  fi
+  printf '%s\n' "$main_line" | cut -d' ' -f1-2
+}
+
+last_service_main_summary_line() {
+  local service="$1"
+  last_service_summary_entries "$service" | grep 'summary success=' | tail -n 1 || true
+}
+
+last_service_summary_text() {
+  local service="$1"
+  local main_line
+  local timestamp
+  local counts
+  main_line="$(last_service_main_summary_line "$service")"
+  if [ -z "$main_line" ]; then
+    return 1
+  fi
+
+  timestamp="$(printf '%s\n' "$main_line" | cut -d' ' -f1-2)"
+  counts="$(last_service_summary_entries "$service" | grep -F "$timestamp" | grep 'summary status_' | sed 's/^.*summary / /' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
+  main_line="$(printf '%s\n' "$main_line" | sed 's/^.*summary /summary /')"
+  if [ -n "$counts" ]; then
+    printf '%s %s\n' "$main_line" "$counts"
+  else
+    printf '%s\n' "$main_line"
+  fi
+}
+
+show_service_runtime_summary() {
+  local service="$1"
+  local label="$2"
+  local status_text
+  local last_run_text
+  local last_result_text
+
+  status_text="$(service_runtime_status_label "$service")"
+  last_run_text="$(last_service_summary_time "$service" || true)"
+  last_result_text="$(last_service_summary_text "$service" || true)"
+
+  [ -n "$last_run_text" ] || last_run_text="$(t runtime_never_ran)"
+  [ -n "$last_result_text" ] || last_result_text="$(t runtime_no_summary)"
+
+  echo "- $label：$(t runtime_status_label)=$status_text | $(t runtime_last_run_label)=$last_run_text | $(t runtime_last_result_label)=$last_result_text"
+}
+
 print_automatic_task_conflicts() {
   local has_conflict=1
   if service_is_running sub2test.service; then
@@ -1986,10 +2100,19 @@ stop_automatic_tasks_for_manual_run() {
   return 1
 }
 
+run_manual_once_with_lock() {
+  local mode="$1"
+  echo "$(t manual_lock_starting)"
+  if ! /usr/bin/flock -w "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" /opt/sub2test/run.lock "$SCRIPT_PATH" run-once "$mode"; then
+    echo "$(t manual_lock_failed)"
+    return 1
+  fi
+}
+
 run_manual_once() {
   local mode="$1"
   if ! automatic_tasks_conflicting; then
-    run_once "$mode"
+    run_manual_once_with_lock "$mode"
     return 0
   fi
 
@@ -2007,7 +2130,7 @@ run_manual_once() {
   fi
 
   echo "$(t manual_conflict_stopped)"
-  run_once "$mode"
+  run_manual_once_with_lock "$mode"
 }
 
 enable_task() {
