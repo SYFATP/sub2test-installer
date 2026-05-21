@@ -173,6 +173,8 @@ SUB2TEST_ADMIN_API_KEY={keep("SUB2TEST_ADMIN_API_KEY", "")}
 SUB2TEST_ERROR_STREAK_THRESHOLD={keep("SUB2TEST_ERROR_STREAK_THRESHOLD", "3")}
 # sub2test 本地状态文件路径
 SUB2TEST_STATE_FILE={keep("SUB2TEST_STATE_FILE", "/opt/sub2test/state.json")}
+# 共用运行锁最多等待多少秒；0 表示不等待
+SUB2TEST_LOCK_WAIT_SECONDS={keep("SUB2TEST_LOCK_WAIT_SECONDS", "3600")}
 # 是否启用未测试 active 账号独立定时任务：true / false
 SUB2TEST_UNTESTED_ENABLED={keep("SUB2TEST_UNTESTED_ENABLED", "false")}
 # 未测试 active 账号每隔多少分钟执行一次（5-720）
@@ -341,6 +343,22 @@ if minutes < 5 or minutes > 720:
     sys.exit(1)
 print(minutes)
 PY_EVERY_MINUTES
+}
+
+systemd_lock_wait_seconds() {
+  python3 - "$1" <<'PY_LOCK_WAIT'
+import sys
+value = (sys.argv[1] or '').strip()
+try:
+    seconds = int(value)
+except Exception:
+    print('lock wait seconds must be a non-negative integer', file=sys.stderr)
+    sys.exit(1)
+if seconds < 0:
+    print('lock wait seconds must be >= 0', file=sys.stderr)
+    sys.exit(1)
+print(seconds)
+PY_LOCK_WAIT
 }
 
 systemd_randomized_delay() {
@@ -1380,6 +1398,7 @@ t() {
     en:label_admin_api_key) echo "Admin API key" ;;
     en:label_error_threshold) echo "Disable after this many consecutive errors" ;;
     en:label_state_file) echo "Local state file path" ;;
+    en:label_lock_wait_seconds) echo "Shared lock wait seconds (0 means fail immediately)" ;;
     en:label_untested_enabled) echo "Enable automatic task for untested accounts" ;;
     en:label_untested_every_minutes) echo "Run untested task every N minutes (5-720)" ;;
     en:label_untested_delay) echo "Untested task random delay seconds" ;;
@@ -1476,6 +1495,7 @@ t() {
     zh:label_admin_api_key) echo "管理端 API Key" ;;
     zh:label_error_threshold) echo "连续报错多少次后停用账号" ;;
     zh:label_state_file) echo "本地状态文件路径" ;;
+    zh:label_lock_wait_seconds) echo "共享锁最多等待多少秒（0 表示不等待）" ;;
     zh:label_untested_enabled) echo "是否启用未测账号自动任务" ;;
     zh:label_untested_every_minutes) echo "未测任务每隔多少分钟执行一次（5-720）" ;;
     zh:label_untested_delay) echo "未测任务随机延迟秒数" ;;
@@ -1513,6 +1533,7 @@ show_config() {
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}    # 管理端 API Key"
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
+  echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}    # 共享锁最多等待秒数，0 表示不等待"
   echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}    # 是否启用未测试 active 账号定时任务"
   echo "SUB2TEST_UNTESTED_EVERY_MINUTES=${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}    # 未测试 active 账号每隔多少分钟执行一次"
   echo "SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}    # 未测试 active 账号 systemd 随机延迟秒数"
@@ -1542,6 +1563,7 @@ show_global_config() {
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}"
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}"
+  echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}"
   echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}"
   echo "SUB2TEST_TIMEOUT_SECONDS=${SUB2TEST_TIMEOUT_SECONDS:-30}"
   echo "SUB2TEST_SLEEP_MIN_SECONDS=${SUB2TEST_SLEEP_MIN_SECONDS:-3}"
@@ -1741,6 +1763,7 @@ edit_global_config() {
   edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}" "$(t label_admin_api_key)"
   edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "$(t label_error_threshold)"
   edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}" "$(t label_state_file)"
+  edit_value SUB2TEST_LOCK_WAIT_SECONDS "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" "$(t label_lock_wait_seconds)"
   edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}" "$(t label_concurrency)"
   edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}" "$(t label_timeout)"
   edit_value SUB2TEST_SLEEP_MIN_SECONDS "${SUB2TEST_SLEEP_MIN_SECONDS:-3}" "$(t label_sleep_min)"
@@ -2016,7 +2039,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -w 3600 /opt/sub2test/run.lock $LINK_FILE run-once
+ExecStart=/usr/bin/flock -w $(systemd_lock_wait_seconds "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}") /opt/sub2test/run.lock $LINK_FILE run-once
 EOF
 
 cat > /etc/systemd/system/sub2test-untested.service <<EOF
@@ -2026,7 +2049,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -w 3600 /opt/sub2test/run.lock $LINK_FILE run-once untested
+ExecStart=/usr/bin/flock -w $(systemd_lock_wait_seconds "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}") /opt/sub2test/run.lock $LINK_FILE run-once untested
 EOF
 
 cat > "$SYSTEMD_TIMER" <<'EOF'
