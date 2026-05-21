@@ -1,6 +1,6 @@
 # sub2test-installer
 
-Current release: `0.1.3`
+Current release: `0.1.4`
 
 - [中文](#中文)
 - [English](#english)
@@ -10,7 +10,7 @@ Current release: `0.1.3`
 
 ## 中文
 
-`sub2test-installer.sh` 当前发布版本为 `0.1.3`。
+`sub2test-installer.sh` 当前发布版本为 `0.1.4`。
 
 `sub2test-installer.sh` 用来给 Sub2API 部署一套独立的 `sub2test` 运行环境：自动发现数据库配置、调用管理端账号测活接口、把连续 `error` 的账号在达到阈值后自动设为 `disabled`，并可通过 systemd timer 定时执行。
 
@@ -172,6 +172,56 @@ cat /opt/sub2test/state.json
 
 ### Release notes
 
+#### v0.1.4
+
+**中文**
+
+- 修复 installer 本体在生成 service 时误调用运行时 helper，避免安装阶段出现 `systemd_lock_wait_seconds: command not found`
+- 新增 `SUB2TEST_LOCK_WAIT_SECONDS` 配置项，让全量任务与未测任务的共享锁等待秒数可配置
+- 给关键数值配置增加统一前置校验，并新增 `sub2test preflight`，让非法参数在安装、启用或重载前更早暴露
+- 强化运行时数值解析错误提示，避免配置非法时只看到裸 `ValueError`
+
+升级命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
+chmod +x /tmp/sub2test-installer.sh
+sudo bash /tmp/sub2test-installer.sh --force
+sudo sub2test preflight
+sudo systemctl daemon-reload
+sudo systemctl restart sub2test.timer
+sudo systemctl restart sub2test-untested.timer
+```
+
+注意：
+
+- 重启 `sub2test.service` 或 `sub2test-untested.service` 会立即执行一次任务
+- 如果只想刷新自动调度，不想立刻执行，请只重启对应的 `.timer`
+
+**English**
+
+- Fixed the installer shell mistakenly calling a runtime-only helper while rendering systemd services, so installation no longer fails with `systemd_lock_wait_seconds: command not found`
+- Added `SUB2TEST_LOCK_WAIT_SECONDS` so the shared lock wait time is configurable for both full and untested tasks
+- Added centralized preflight validation for critical numeric settings plus a new `sub2test preflight` command, so invalid values fail earlier during install, enable, or reload
+- Improved runtime numeric parsing errors so invalid config no longer surfaces only as a bare `ValueError`
+
+Upgrade command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
+chmod +x /tmp/sub2test-installer.sh
+sudo bash /tmp/sub2test-installer.sh --force
+sudo sub2test preflight
+sudo systemctl daemon-reload
+sudo systemctl restart sub2test.timer
+sudo systemctl restart sub2test-untested.timer
+```
+
+Notes:
+
+- Restarting `sub2test.service` or `sub2test-untested.service` will execute a task immediately
+- If you only want to refresh scheduling without triggering a run, restart only the corresponding `.timer`
+
 #### v0.1.3
 
 **中文**
@@ -324,7 +374,7 @@ Notes:
 
 ## English
 
-Current `sub2test-installer.sh` release: `0.1.3`.
+Current `sub2test-installer.sh` release: `0.1.4`.
 
 `sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
 
