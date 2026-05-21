@@ -2016,7 +2016,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -w 0 /opt/sub2test/run.lock $LINK_FILE run-once
+ExecStart=/usr/bin/flock -w 3600 /opt/sub2test/run.lock $LINK_FILE run-once
 EOF
 
 cat > /etc/systemd/system/sub2test-untested.service <<EOF
@@ -2026,7 +2026,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -w 0 /opt/sub2test/run.lock $LINK_FILE run-once untested
+ExecStart=/usr/bin/flock -w 3600 /opt/sub2test/run.lock $LINK_FILE run-once untested
 EOF
 
 cat > "$SYSTEMD_TIMER" <<'EOF'
@@ -2058,12 +2058,12 @@ WantedBy=timers.target
 EOF
 
 ln -sf "$BIN_FILE" "$LINK_FILE"
+systemctl daemon-reload
 /usr/local/bin/sub2test show-config >/dev/null 2>&1 || true
 /usr/local/bin/sub2test enable >/dev/null 2>&1 || true
 if grep -q '^SUB2TEST_UNTESTED_ENABLED=true$' "$CONFIG_FILE"; then
   /usr/local/bin/sub2test enable-untested >/dev/null 2>&1 || true
 fi
-systemctl daemon-reload
 
 echo "sub2test installed"
 echo "Config: $CONFIG_FILE"
