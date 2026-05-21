@@ -2039,7 +2039,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -w $(systemd_lock_wait_seconds "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}") /opt/sub2test/run.lock $LINK_FILE run-once
+ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/run.lock $LINK_FILE run-once
 EOF
 
 cat > /etc/systemd/system/sub2test-untested.service <<EOF
@@ -2049,7 +2049,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -w $(systemd_lock_wait_seconds "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}") /opt/sub2test/run.lock $LINK_FILE run-once untested
+ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/run.lock $LINK_FILE run-once untested
 EOF
 
 cat > "$SYSTEMD_TIMER" <<'EOF'
