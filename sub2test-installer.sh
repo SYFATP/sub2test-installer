@@ -258,6 +258,44 @@ path.write_text("\n".join(out) + "\n", encoding='utf-8')
 PY_SAVE_CONFIG
 }
 
+systemd_non_negative_int_for() {
+  local value="$1"
+  local label="$2"
+  python3 - "$value" "$label" <<'PY_NON_NEGATIVE_INT'
+import sys
+value = (sys.argv[1] or '').strip()
+label = sys.argv[2]
+try:
+    number = int(value)
+except Exception:
+    print(f'{label} must be a non-negative integer', file=sys.stderr)
+    sys.exit(1)
+if number < 0:
+    print(f'{label} must be >= 0', file=sys.stderr)
+    sys.exit(1)
+print(number)
+PY_NON_NEGATIVE_INT
+}
+
+systemd_positive_int_for() {
+  local value="$1"
+  local label="$2"
+  python3 - "$value" "$label" <<'PY_POSITIVE_INT'
+import sys
+value = (sys.argv[1] or '').strip()
+label = sys.argv[2]
+try:
+    number = int(value)
+except Exception:
+    print(f'{label} must be a positive integer', file=sys.stderr)
+    sys.exit(1)
+if number < 1:
+    print(f'{label} must be >= 1', file=sys.stderr)
+    sys.exit(1)
+print(number)
+PY_POSITIVE_INT
+}
+
 systemd_calendar_for() {
   local daily_at="$1"
   local every_hours="$2"
@@ -314,19 +352,7 @@ systemd_calendar() {
 }
 
 systemd_randomized_delay_for() {
-  python3 - "$1" <<'PY_RANDOM_DELAY'
-import sys
-value = (sys.argv[1] or '').strip()
-try:
-    seconds = int(value)
-except Exception:
-    print('randomized delay must be a non-negative integer', file=sys.stderr)
-    sys.exit(1)
-if seconds < 0:
-    print('randomized delay must be >= 0', file=sys.stderr)
-    sys.exit(1)
-print(seconds)
-PY_RANDOM_DELAY
+  systemd_non_negative_int_for "$1" "randomized delay"
 }
 
 systemd_minutes_calendar_for() {
@@ -346,19 +372,32 @@ PY_EVERY_MINUTES
 }
 
 systemd_lock_wait_seconds() {
-  python3 - "$1" <<'PY_LOCK_WAIT'
+  systemd_non_negative_int_for "$1" "lock wait seconds"
+}
+
+validate_runtime_numeric_config() {
+  systemd_lock_wait_seconds "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" >/dev/null
+  systemd_randomized_delay_for "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" >/dev/null
+  systemd_randomized_delay_for "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" >/dev/null
+  systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" >/dev/null
+  if [ -n "${SUB2TEST_EVERY_HOURS:-}" ]; then
+    systemd_calendar_for "" "${SUB2TEST_EVERY_HOURS:-}" "daily" "false" >/dev/null
+  fi
+  systemd_positive_int_for "${SUB2TEST_CONCURRENCY:-3}" "concurrency" >/dev/null
+  systemd_positive_int_for "${SUB2TEST_TIMEOUT_SECONDS:-30}" "timeout seconds" >/dev/null
+  systemd_positive_int_for "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "error streak threshold" >/dev/null
+  local sleep_min
+  local sleep_max
+  sleep_min="$(systemd_non_negative_int_for "${SUB2TEST_SLEEP_MIN_SECONDS:-3}" "sleep min seconds")"
+  sleep_max="$(systemd_non_negative_int_for "${SUB2TEST_SLEEP_MAX_SECONDS:-10}" "sleep max seconds")"
+  python3 - "$sleep_min" "$sleep_max" <<'PY_SLEEP_RANGE'
 import sys
-value = (sys.argv[1] or '').strip()
-try:
-    seconds = int(value)
-except Exception:
-    print('lock wait seconds must be a non-negative integer', file=sys.stderr)
+sleep_min = int(sys.argv[1])
+sleep_max = int(sys.argv[2])
+if sleep_max < sleep_min:
+    print('sleep max seconds must be >= sleep min seconds', file=sys.stderr)
     sys.exit(1)
-if seconds < 0:
-    print('lock wait seconds must be >= 0', file=sys.stderr)
-    sys.exit(1)
-print(seconds)
-PY_LOCK_WAIT
+PY_SLEEP_RANGE
 }
 
 systemd_randomized_delay() {
@@ -594,6 +633,7 @@ PY_PREFLIGHT_API
 preflight_runtime() {
   require_python_module yaml python3-yaml
   require_python_module psycopg2 python3-psycopg2
+  validate_runtime_numeric_config
   preflight_config_source
   preflight_api_config
   eval "$(resolve_db_config)"
@@ -880,11 +920,26 @@ def response_error_detail(status_code, body_bytes):
         return shorten_detail(body)
     return shorten_detail(f'HTTP {status_code}')
 
-sleep_min = int(get_env('SUB2TEST_SLEEP_MIN_SECONDS', '3') or '3')
-sleep_max = int(get_env('SUB2TEST_SLEEP_MAX_SECONDS', '10') or '10')
-timeout_seconds = int(get_env('SUB2TEST_TIMEOUT_SECONDS', '30') or '30')
-batch_size = max(int(get_env('SUB2TEST_CONCURRENCY', '3') or '3'), 1)
-error_streak_threshold = max(int(get_env('SUB2TEST_ERROR_STREAK_THRESHOLD', '3') or '3'), 1)
+def parse_int_env(name: str, default: int, minimum: int | None = None) -> int:
+    raw = get_env(name, str(default)) or str(default)
+    try:
+        value = int(raw)
+    except Exception:
+        print(f'{name} must be an integer, got: {raw}', file=sys.stderr)
+        sys.exit(1)
+    if minimum is not None and value < minimum:
+        print(f'{name} must be >= {minimum}, got: {value}', file=sys.stderr)
+        sys.exit(1)
+    return value
+
+sleep_min = parse_int_env('SUB2TEST_SLEEP_MIN_SECONDS', 3, 0)
+sleep_max = parse_int_env('SUB2TEST_SLEEP_MAX_SECONDS', 10, 0)
+if sleep_max < sleep_min:
+    print(f'SUB2TEST_SLEEP_MAX_SECONDS must be >= SUB2TEST_SLEEP_MIN_SECONDS, got: {sleep_max} < {sleep_min}', file=sys.stderr)
+    sys.exit(1)
+timeout_seconds = parse_int_env('SUB2TEST_TIMEOUT_SECONDS', 30, 1)
+batch_size = parse_int_env('SUB2TEST_CONCURRENCY', 3, 1)
+error_streak_threshold = parse_int_env('SUB2TEST_ERROR_STREAK_THRESHOLD', 3, 1)
 state_file = Path(get_env('SUB2TEST_STATE_FILE', '/opt/sub2test/state.json') or '/opt/sub2test/state.json')
 rows_file = sys.argv[1]
 mode = sys.argv[2]
@@ -2013,12 +2068,13 @@ menu() {
 case "${1:-menu}" in
   run-once) run_once "${2:-all}" ;;
   show-config) show_config ;;
+  preflight) preflight_runtime ;;
   enable) enable_task ;;
   disable) disable_task ;;
   enable-untested) enable_untested_task ;;
   disable-untested) disable_untested_task ;;
   menu) menu ;;
-  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|show-config|enable|disable|enable-untested|disable-untested]" >&2; exit 1 ;;
+  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|show-config|preflight|enable|disable|enable-untested|disable-untested]" >&2; exit 1 ;;
 esac
 '''
 content = content.replace('__CONFIG_FILE__', config_file)
@@ -2083,6 +2139,7 @@ EOF
 ln -sf "$BIN_FILE" "$LINK_FILE"
 systemctl daemon-reload
 /usr/local/bin/sub2test show-config >/dev/null 2>&1 || true
+/usr/local/bin/sub2test preflight >/dev/null 2>&1 || true
 /usr/local/bin/sub2test enable >/dev/null 2>&1 || true
 if grep -q '^SUB2TEST_UNTESTED_ENABLED=true$' "$CONFIG_FILE"; then
   /usr/local/bin/sub2test enable-untested >/dev/null 2>&1 || true
