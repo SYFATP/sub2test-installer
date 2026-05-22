@@ -838,7 +838,7 @@ with open(input_path, 'r', encoding='utf-8') as src:
         if len(parts) != 2:
             continue
         account_id, proxy_id = parts
-        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', '\\N') else int(proxy_id)})
+        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', '\\\\N') else int(proxy_id)})
 
 with open(output_path, 'w', encoding='utf-8') as out:
     out.write(json.dumps({'accounts': accounts}, ensure_ascii=False))
@@ -3230,7 +3230,7 @@ with open(input_path, 'r', encoding='utf-8') as src:
         if len(parts) != 2:
             continue
         account_id, proxy_id = parts
-        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', '\\N') else int(proxy_id)})
+        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', '\\\\N') else int(proxy_id)})
 
 with open(output_path, 'w', encoding='utf-8') as out:
     out.write(json.dumps({'accounts': accounts}, ensure_ascii=False))
