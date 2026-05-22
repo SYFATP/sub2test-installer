@@ -2524,20 +2524,12 @@ reload_timers_if_enabled() {
   preflight_runtime
   render_timer
   render_untested_timer
-  render_duplicates_timer
-  render_proxy_assign_timer
   systemctl daemon-reload
   if systemctl is-enabled sub2test.timer >/dev/null 2>&1; then
     systemctl restart sub2test.timer
   fi
   if systemctl is-enabled sub2test-untested.timer >/dev/null 2>&1; then
     systemctl restart sub2test-untested.timer
-  fi
-  if systemctl is-enabled sub2test-proxy-assign.timer >/dev/null 2>&1; then
-    systemctl restart sub2test-proxy-assign.timer
-  fi
-  if systemctl is-enabled sub2test-duplicates.timer >/dev/null 2>&1; then
-    systemctl restart sub2test-duplicates.timer
   fi
   . "$SUB2TEST_CONFIG_FILE"
 }
@@ -2602,6 +2594,10 @@ edit_proxy_assign_task_config() {
   edit_value SUB2TEST_PROXY_ASSIGN_MODE "${SUB2TEST_PROXY_ASSIGN_MODE:-index}" "$(t label_proxy_assign_mode)"
   edit_value SUB2TEST_PROXY_ASSIGN_INDEX "${SUB2TEST_PROXY_ASSIGN_INDEX:-1}" "$(t label_proxy_assign_index)"
   reload_timers_if_enabled
+  preflight_runtime
+  render_duplicates_timer
+  render_proxy_assign_timer
+  systemctl daemon-reload
   echo
   show_proxy_assign_task_config
   echo "- $(t proxy_assign_task)：$(periodic_minutes_schedule_summary "${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}" "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}" "$(t proxy_assign_scope)" "代理分配任务分钟间隔配置无效" "Invalid proxy-assignment interval")"
@@ -2945,24 +2941,12 @@ enable_task() {
   preflight_runtime
   render_timer
   render_untested_timer
-  render_duplicates_timer
-  render_proxy_assign_timer
   systemctl daemon-reload
   systemctl enable --now sub2test.timer
   if [ "${SUB2TEST_UNTESTED_ENABLED:-false}" = "true" ]; then
     systemctl enable --now sub2test-untested.timer
   else
     systemctl disable --now sub2test-untested.timer >/dev/null 2>&1 || true
-  fi
-  if [ "${SUB2TEST_DUPLICATES_ENABLED:-false}" = "true" ]; then
-    systemctl enable --now sub2test-duplicates.timer
-  else
-    systemctl disable --now sub2test-duplicates.timer >/dev/null 2>&1 || true
-  fi
-  if [ "${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}" = "true" ]; then
-    systemctl enable --now sub2test-proxy-assign.timer
-  else
-    systemctl disable --now sub2test-proxy-assign.timer >/dev/null 2>&1 || true
   fi
   echo "sub2test timer enabled"
 }
@@ -3262,7 +3246,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/run.lock $LINK_FILE run-duplicates
+ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/duplicates.lock $LINK_FILE run-duplicates
 EOF
 
 cat > /etc/systemd/system/sub2test-proxy-assign.service <<EOF
@@ -3272,7 +3256,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=$LINK_FILE run-proxy-assign
+ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/proxy-assign.lock $LINK_FILE run-proxy-assign
 EOF
 
 cat > "$SYSTEMD_TIMER" <<'EOF'
