@@ -2790,7 +2790,7 @@ service_runtime_status_label() {
     failed)
       t runtime_status_failed
       ;;
-    inactive)
+    inactive|deactivating|reloading|maintenance)
       t runtime_status_inactive
       ;;
     *)
@@ -3165,7 +3165,270 @@ run_once() {
   run_health_check "$mode"
 }
 
+run_proxy_assign() {
+  preflight_runtime
+  local rows_json=""
+  local rows_tsv=""
+  rows_json="$(mktemp)"
+  cleanup_run_proxy_assign() {
+    rm -f -- "${rows_json:-}" "${rows_tsv:-}"
+  }
+  trap cleanup_run_proxy_assign RETURN
+
+  if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    rows_tsv="$(mktemp)"
+    docker exec \
+      -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
+      "$SUB2TEST_DB_CONTAINER" \
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, proxy_id FROM accounts WHERE deleted_at IS NULL AND proxy_id IS NULL ORDER BY id ASC" > "$rows_tsv"
+    python3 - "$rows_tsv" "$rows_json" <<'PY_EXPORT_CONTAINER_PROXY_ASSIGN'
+import json
+import sys
+
+input_path = sys.argv[1]
+output_path = sys.argv[2]
+accounts = []
+
+with open(input_path, 'r', encoding='utf-8') as src:
+    for raw_line in src:
+        line = raw_line.rstrip('\n')
+        if not line:
+            continue
+        parts = line.split('\t', 1)
+        if len(parts) != 2:
+            continue
+        account_id, proxy_id = parts
+        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', '\\N') else int(proxy_id)})
+
+with open(output_path, 'w', encoding='utf-8') as out:
+    out.write(json.dumps({'accounts': accounts}, ensure_ascii=False))
+PY_EXPORT_CONTAINER_PROXY_ASSIGN
+  else
+    python3 - "$rows_json" <<'PY_EXPORT_PROXY_ASSIGN'
+import json
+import os
+import sys
+
+import psycopg2
+
+output_path = sys.argv[1]
+
+conn = psycopg2.connect(
+    host=os.environ['SUB2TEST_DB_HOST'],
+    port=os.environ['SUB2TEST_DB_PORT'],
+    user=os.environ['SUB2TEST_DB_USER'],
+    password=os.getenv('SUB2TEST_DB_PASSWORD', ''),
+    dbname=os.environ['SUB2TEST_DB_NAME'],
+    sslmode=os.getenv('SUB2TEST_DB_SSLMODE', 'disable'),
+)
+cur = conn.cursor()
+cur.execute(
+    """
+    SELECT id, proxy_id
+    FROM accounts
+    WHERE deleted_at IS NULL
+      AND proxy_id IS NULL
+    ORDER BY id ASC
+    """
+)
+accounts = [{'id': account_id, 'proxy_id': proxy_id} for account_id, proxy_id in cur.fetchall()]
+cur.close()
+conn.close()
+
+with open(output_path, 'w', encoding='utf-8') as fh:
+    fh.write(json.dumps({'accounts': accounts}, ensure_ascii=False))
+PY_EXPORT_PROXY_ASSIGN
+  fi
+
+  python3 - "$rows_json" <<'PY_RUN_PROXY_ASSIGN'
+import json
+import os
+import random
+import sys
+import urllib.error
+import urllib.request
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
+rows_path = sys.argv[1]
+api_base_url = (os.getenv('SUB2TEST_API_BASE_URL', '') or '').strip().rstrip('/')
+admin_api_key = (os.getenv('SUB2TEST_ADMIN_API_KEY', '') or '').strip()
+timeout_seconds = int((os.getenv('SUB2TEST_TIMEOUT_SECONDS', '30') or '30').strip())
+mode = (os.getenv('SUB2TEST_PROXY_ASSIGN_MODE', 'index') or 'index').strip().lower()
+index_raw = (os.getenv('SUB2TEST_PROXY_ASSIGN_INDEX', '1') or '1').strip()
+db_container = (os.getenv('SUB2TEST_DB_CONTAINER', '') or '').strip()
+
+with open(rows_path, 'r', encoding='utf-8') as fh:
+    payload = json.load(fh)
+
+accounts = payload.get('accounts') or []
+headers = {
+    'x-api-key': admin_api_key,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+}
+
+if mode not in ('index', 'random'):
+    print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=invalid_mode mode={mode}')
+    sys.exit(1)
+
+try:
+    proxy_index = int(index_raw)
+except Exception:
+    print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=invalid_index index={index_raw}')
+    sys.exit(1)
+if proxy_index < 1:
+    print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=invalid_index index={proxy_index}')
+    sys.exit(1)
+
+
+def shorten_detail(detail: str) -> str:
+    detail = '' if detail is None else str(detail)
+    detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+    detail = detail.strip().replace('\n', ' ')
+    detail = ' '.join(detail.split())
+    return detail[:180]
+
+
+def response_error_detail(status_code, body_bytes):
+    try:
+        body = body_bytes.decode('utf-8', errors='replace').strip() if body_bytes else ''
+    except Exception:
+        body = ''
+    if body:
+        return shorten_detail(body)
+    return shorten_detail(f'HTTP {status_code}')
+
+
+def safe_exception_text(exc: Exception) -> str:
+    try:
+        text = str(exc)
+    except Exception:
+        text = repr(exc)
+    if not text:
+        text = exc.__class__.__name__
+    return shorten_detail(text)
+
+
+def update_account_fields(account_id: int, update_payload: dict):
+    body = json.dumps(update_payload, ensure_ascii=False).encode('utf-8')
+    for method in ('PATCH', 'PUT'):
+        req = urllib.request.Request(
+            f'{api_base_url}/admin/accounts/{account_id}',
+            data=body,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+                return True, getattr(response, 'status', None) or response.getcode(), ''
+        except urllib.error.HTTPError as err:
+            if method == 'PATCH' and err.code in (404, 405):
+                continue
+            return False, err.code, response_error_detail(err.code, err.read())
+        except Exception as exc:
+            return False, None, safe_exception_text(exc)
+    return False, None, 'update request failed'
+
+
+def load_active_proxy_ids() -> list[int]:
+    if db_container:
+        import subprocess
+        command = [
+            'docker', 'exec', '-e', f'PGPASSWORD={os.getenv("SUB2TEST_DB_PASSWORD", "")}', db_container,
+            'psql', '-U', os.environ['SUB2TEST_DB_USER'], '-d', os.environ['SUB2TEST_DB_NAME'], '-F', '\t', '-Atqc',
+            "SELECT id FROM proxies WHERE deleted_at IS NULL AND status = 'active' ORDER BY id ASC",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8')
+        if result.returncode != 0:
+            print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=load_proxy_failed detail={shorten_detail(result.stderr)}')
+            sys.exit(1)
+        return [int(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+
+    import psycopg2
+    conn = psycopg2.connect(
+        host=os.environ['SUB2TEST_DB_HOST'],
+        port=os.environ['SUB2TEST_DB_PORT'],
+        user=os.environ['SUB2TEST_DB_USER'],
+        password=os.getenv('SUB2TEST_DB_PASSWORD', ''),
+        dbname=os.environ['SUB2TEST_DB_NAME'],
+        sslmode=os.getenv('SUB2TEST_DB_SSLMODE', 'disable'),
+    )
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id
+        FROM proxies
+        WHERE deleted_at IS NULL
+          AND status = 'active'
+        ORDER BY id ASC
+        """
+    )
+    proxy_ids = [proxy_id for (proxy_id,) in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return proxy_ids
+
+
+def select_proxy_id(active_proxy_ids: list[int]) -> int | None:
+    if not active_proxy_ids:
+        return None
+    if mode == 'random':
+        return random.choice(active_proxy_ids)
+    if proxy_index > len(active_proxy_ids):
+        return None
+    return active_proxy_ids[proxy_index - 1]
+
+
+active_proxy_ids = load_active_proxy_ids()
+selected_proxy_id = select_proxy_id(active_proxy_ids)
+
+if not active_proxy_ids:
+    print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=no_available_proxy mode={mode}')
+    sys.exit(0)
+if selected_proxy_id is None:
+    print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=proxy_index_out_of_range mode={mode} index={proxy_index} available={len(active_proxy_ids)}')
+    sys.exit(0)
+
+assigned = 0
+failed = 0
+skipped_existing = 0
+
+for account in accounts:
+    account_id = int(account.get('id'))
+    current_proxy_id = account.get('proxy_id')
+    if current_proxy_id not in (None, ''):
+        skipped_existing += 1
+        print(f'proxy_assign_skip account={account_id} reason=has_proxy proxy={current_proxy_id}')
+        continue
+
+    ok, status_code, detail = update_account_fields(account_id, {'proxy_id': int(selected_proxy_id)})
+    if ok:
+        assigned += 1
+        print(f'proxy_assign account={account_id} proxy={selected_proxy_id} mode={mode}')
+    else:
+        failed += 1
+        detail_part = f' detail={detail}' if detail else ''
+        status_part = f' status={status_code}' if status_code is not None else ''
+        print(f'proxy_assign_failed account={account_id} proxy={selected_proxy_id} mode={mode}{status_part}{detail_part}')
+
+print(f'proxy_assign_summary candidates={len(accounts)} assigned={assigned} skipped_existing={skipped_existing} failed={failed} mode={mode} selected_proxy={selected_proxy_id} available={len(active_proxy_ids)}')
+PY_RUN_PROXY_ASSIGN
+}
+
 run_proxy_assign_once() {
+  echo "$(t manual_lock_starting)"
+  if ! /usr/bin/flock -w "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" /opt/sub2test/proxy-assign.lock "$SCRIPT_PATH" run-proxy-assign-now; then
+    echo "$(t manual_lock_failed)"
+    return 1
+  fi
+}
+
+run_proxy_assign_now() {
   . "$SUB2TEST_CONFIG_FILE"
   export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
   export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
@@ -3222,6 +3485,7 @@ case "${1:-menu}" in
   run-once) run_once "${2:-all}" ;;
   run-duplicates) run_duplicates_once ;;
   run-proxy-assign) run_proxy_assign_once ;;
+  run-proxy-assign-now) run_proxy_assign_now ;;
   show-config) show_config ;;
   preflight) preflight_runtime ;;
   enable) enable_task ;;
