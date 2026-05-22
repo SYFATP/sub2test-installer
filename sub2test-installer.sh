@@ -374,7 +374,9 @@ systemd_randomized_delay_for() {
 }
 
 systemd_minutes_calendar_for() {
-  python3 - "$1" "$2" <<'PY_EVERY_MINUTES'
+  local value="$1"
+  local label="${2:-interval}"
+  python3 - "$value" "$label" <<'PY_EVERY_MINUTES'
 import sys
 value = (sys.argv[1] or '').strip()
 label = (sys.argv[2] or 'interval').strip() or 'interval'
