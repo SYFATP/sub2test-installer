@@ -2762,7 +2762,7 @@ service_is_waiting() {
   sub_state="$(service_sub_state "$service")"
   [ "$active_state" = "activating" ] && [ "$sub_state" = "start" ] || return 1
   lock_path="$(service_lock_path "$service" || true)"
-  [ -n "$lock_path" ] || return 0
+  [ -n "$lock_path" ] || return 1
   /usr/sbin/fuser "$lock_path" >/dev/null 2>&1
 }
 
