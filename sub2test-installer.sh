@@ -2735,13 +2735,35 @@ service_is_running() {
   [ "$(service_active_state "$service")" = "active" ]
 }
 
+service_lock_path() {
+  local service="$1"
+  case "$service" in
+    sub2test.service|sub2test-untested.service)
+      printf '%s\n' "/opt/sub2test/run.lock"
+      ;;
+    sub2test-duplicates.service)
+      printf '%s\n' "/opt/sub2test/duplicates.lock"
+      ;;
+    sub2test-proxy-assign.service)
+      printf '%s\n' "/opt/sub2test/proxy-assign.lock"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 service_is_waiting() {
   local service="$1"
   local active_state
   local sub_state
+  local lock_path
   active_state="$(service_active_state "$service")"
   sub_state="$(service_sub_state "$service")"
-  [ "$active_state" = "activating" ] && [ "$sub_state" = "start" ]
+  [ "$active_state" = "activating" ] && [ "$sub_state" = "start" ] || return 1
+  lock_path="$(service_lock_path "$service" || true)"
+  [ -n "$lock_path" ] || return 0
+  /usr/sbin/fuser "$lock_path" >/dev/null 2>&1
 }
 
 service_runtime_status_label() {
