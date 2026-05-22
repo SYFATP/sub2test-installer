@@ -1959,6 +1959,7 @@ t() {
     en:runtime_no_summary) echo "No summary recorded" ;;
     en:runtime_status_running) echo "Running" ;;
     en:runtime_status_waiting) echo "Waiting for lock" ;;
+    en:runtime_status_starting) echo "Starting" ;;
     en:runtime_status_failed) echo "Failed" ;;
     en:runtime_status_inactive) echo "Idle" ;;
     en:runtime_status_unknown) echo "Unknown" ;;
@@ -2115,6 +2116,7 @@ t() {
     zh:runtime_no_summary) echo "最近一次未产生汇总" ;;
     zh:runtime_status_running) echo "正在执行" ;;
     zh:runtime_status_waiting) echo "排队等待锁" ;;
+    zh:runtime_status_starting) echo "启动中" ;;
     zh:runtime_status_failed) echo "执行失败" ;;
     zh:runtime_status_inactive) echo "空闲" ;;
     zh:runtime_status_unknown) echo "未知" ;;
@@ -2782,6 +2784,9 @@ service_runtime_status_label() {
   fi
 
   case "$active_state" in
+    activating)
+      t runtime_status_starting
+      ;;
     failed)
       t runtime_status_failed
       ;;
