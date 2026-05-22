@@ -2525,6 +2525,7 @@ reload_timers_if_enabled() {
   render_timer
   render_untested_timer
   render_duplicates_timer
+  render_proxy_assign_timer
   systemctl daemon-reload
   if systemctl is-enabled sub2test.timer >/dev/null 2>&1; then
     systemctl restart sub2test.timer
@@ -2600,8 +2601,10 @@ edit_proxy_assign_task_config() {
   edit_value SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_proxy_assign_delay)"
   edit_value SUB2TEST_PROXY_ASSIGN_MODE "${SUB2TEST_PROXY_ASSIGN_MODE:-index}" "$(t label_proxy_assign_mode)"
   edit_value SUB2TEST_PROXY_ASSIGN_INDEX "${SUB2TEST_PROXY_ASSIGN_INDEX:-1}" "$(t label_proxy_assign_index)"
+  reload_timers_if_enabled
   echo
   show_proxy_assign_task_config
+  echo "- $(t proxy_assign_task)：$(periodic_minutes_schedule_summary "${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}" "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}" "$(t proxy_assign_scope)" "代理分配任务分钟间隔配置无效" "Invalid proxy-assignment interval")"
 }
 
 edit_full_task_config() {
