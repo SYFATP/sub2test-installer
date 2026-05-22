@@ -831,14 +831,14 @@ accounts = []
 
 with open(input_path, 'r', encoding='utf-8') as src:
     for raw_line in src:
-        line = raw_line.rstrip('\\n')
+        line = raw_line.rstrip(chr(10))
         if not line:
             continue
-        parts = line.split('\\t', 1)
+        parts = line.split(chr(9), 1)
         if len(parts) != 2:
             continue
         account_id, proxy_id = parts
-        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', '\\\\N') else int(proxy_id)})
+        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', chr(92) + 'N') else int(proxy_id)})
 
 with open(output_path, 'w', encoding='utf-8') as out:
     out.write(json.dumps({'accounts': accounts}, ensure_ascii=False))
@@ -929,7 +929,7 @@ if proxy_index < 1:
 def shorten_detail(detail: str) -> str:
     detail = '' if detail is None else str(detail)
     detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
-    detail = detail.strip().replace('\n', ' ')
+    detail = detail.replace(chr(10), ' ')
     detail = ' '.join(detail.split())
     return detail[:180]
 
@@ -1168,7 +1168,7 @@ headers = {
 def shorten_detail(detail: str) -> str:
     detail = '' if detail is None else str(detail)
     detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
-    detail = detail.strip().replace('\n', ' ')
+    detail = detail.replace(chr(10), ' ')
     detail = ' '.join(detail.split())
     return detail[:180]
 
@@ -3223,14 +3223,14 @@ accounts = []
 
 with open(input_path, 'r', encoding='utf-8') as src:
     for raw_line in src:
-        line = raw_line.rstrip('\\n')
+        line = raw_line.rstrip(chr(10))
         if not line:
             continue
-        parts = line.split('\\t', 1)
+        parts = line.split(chr(9), 1)
         if len(parts) != 2:
             continue
         account_id, proxy_id = parts
-        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', '\\\\N') else int(proxy_id)})
+        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', chr(92) + 'N') else int(proxy_id)})
 
 with open(output_path, 'w', encoding='utf-8') as out:
     out.write(json.dumps({'accounts': accounts}, ensure_ascii=False))
@@ -3321,7 +3321,7 @@ if proxy_index < 1:
 def shorten_detail(detail: str) -> str:
     detail = '' if detail is None else str(detail)
     detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
-    detail = detail.strip().replace('\n', ' ')
+    detail = detail.replace(chr(10), ' ')
     detail = ' '.join(detail.split())
     return detail[:180]
 
