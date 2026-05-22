@@ -1961,6 +1961,7 @@ t() {
     en:runtime_status_waiting) echo "Waiting for lock" ;;
     en:runtime_status_starting) echo "Starting" ;;
     en:runtime_status_failed) echo "Failed" ;;
+    en:runtime_status_interrupted) echo "Interrupted" ;;
     en:runtime_status_inactive) echo "Idle" ;;
     en:runtime_status_unknown) echo "Unknown" ;;
     en:manual_lock_starting) echo "Starting manual run with lock." ;;
@@ -2118,6 +2119,7 @@ t() {
     zh:runtime_status_waiting) echo "排队等待锁" ;;
     zh:runtime_status_starting) echo "启动中" ;;
     zh:runtime_status_failed) echo "执行失败" ;;
+    zh:runtime_status_interrupted) echo "已中断" ;;
     zh:runtime_status_inactive) echo "空闲" ;;
     zh:runtime_status_unknown) echo "未知" ;;
     zh:manual_lock_starting) echo "开始通过锁执行手动任务。" ;;
@@ -2800,9 +2802,21 @@ service_is_waiting() {
   printf '%s\n' "$main_command" | grep -q -- '^/usr/bin/flock '
 }
 
+service_result() {
+  local service="$1"
+  systemctl show "$service" --property=Result --value 2>/dev/null || true
+}
+
+service_exec_main_status() {
+  local service="$1"
+  systemctl show "$service" --property=ExecMainStatus --value 2>/dev/null || true
+}
+
 service_runtime_status_label() {
   local service="$1"
   local active_state
+  local result
+  local exec_main_status
   active_state="$(service_active_state "$service")"
 
   if service_is_running "$service"; then
@@ -2820,7 +2834,13 @@ service_runtime_status_label() {
       t runtime_status_starting
       ;;
     failed)
-      t runtime_status_failed
+      result="$(service_result "$service")"
+      exec_main_status="$(service_exec_main_status "$service")"
+      if [ "$result" = "signal" ] && [ "$exec_main_status" = "15" ]; then
+        t runtime_status_interrupted
+      else
+        t runtime_status_failed
+      fi
       ;;
     inactive|deactivating|reloading|maintenance)
       t runtime_status_inactive
