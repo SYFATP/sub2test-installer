@@ -831,10 +831,10 @@ accounts = []
 
 with open(input_path, 'r', encoding='utf-8') as src:
     for raw_line in src:
-        line = raw_line.rstrip('\n')
+        line = raw_line.rstrip('\\n')
         if not line:
             continue
-        parts = line.split('\t', 1)
+        parts = line.split('\\t', 1)
         if len(parts) != 2:
             continue
         account_id, proxy_id = parts
@@ -1082,7 +1082,7 @@ output_path = sys.argv[2]
 
 with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', encoding='utf-8') as out:
     for raw_line in src:
-        line = raw_line.rstrip('\n')
+        line = raw_line.rstrip('\\n')
         if not line:
             continue
         parts = line.split('\t', 2)
@@ -1308,7 +1308,7 @@ output_path = sys.argv[2]
 
 with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', encoding='utf-8') as out:
     for raw_line in src:
-        line = raw_line.rstrip('\n')
+        line = raw_line.rstrip('\\n')
         if not line:
             continue
         parts = line.split('\t', 4)
@@ -3223,10 +3223,10 @@ accounts = []
 
 with open(input_path, 'r', encoding='utf-8') as src:
     for raw_line in src:
-        line = raw_line.rstrip('\n')
+        line = raw_line.rstrip('\\n')
         if not line:
             continue
-        parts = line.split('\t', 1)
+        parts = line.split('\\t', 1)
         if len(parts) != 2:
             continue
         account_id, proxy_id = parts
