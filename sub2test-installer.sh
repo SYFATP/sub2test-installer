@@ -1415,7 +1415,7 @@ def get_env(name: str, default: str = '') -> str:
 def shorten_detail(detail: str) -> str:
     detail = '' if detail is None else str(detail)
     detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
-    detail = detail.strip().replace('\\n', ' ')
+    detail = detail.strip().replace('\\\\n', ' ')
     detail = ' '.join(detail.split())
     return detail[:180]
 
