@@ -2737,12 +2737,20 @@ service_main_pid() {
   systemctl show "$service" --property=MainPID --value 2>/dev/null || true
 }
 
+service_main_command() {
+  local service="$1"
+  local main_pid
+  main_pid="$(service_main_pid "$service")"
+  [ -n "$main_pid" ] && [ "$main_pid" != "0" ] || return 1
+  /usr/bin/ps -o command= -p "$main_pid" 2>/dev/null || true
+}
+
 service_is_running() {
   local service="$1"
   local active_state
   local sub_state
   local lock_path
-  local main_pid
+  local main_command
   active_state="$(service_active_state "$service")"
   sub_state="$(service_sub_state "$service")"
 
@@ -2754,9 +2762,8 @@ service_is_running() {
   lock_path="$(service_lock_path "$service" || true)"
   [ -n "$lock_path" ] || return 0
   /usr/sbin/fuser "$lock_path" >/dev/null 2>&1 || return 1
-  main_pid="$(service_main_pid "$service")"
-  [ -n "$main_pid" ] && [ "$main_pid" != "0" ] || return 1
-  /usr/bin/ps -o command= -p "$main_pid" 2>/dev/null | grep -q -- 'run-once\|run-proxy-assign-now\|run-duplicates'
+  main_command="$(service_main_command "$service")"
+  printf '%s\n' "$main_command" | grep -q -- '/usr/local/bin/sub2test run-once\|/usr/local/bin/sub2test run-proxy-assign\|/usr/local/bin/sub2test run-duplicates\|/opt/sub2test/sub2test.sh run-once\|/opt/sub2test/sub2test.sh run-proxy-assign\|/opt/sub2test/sub2test.sh run-duplicates'
 }
 
 service_lock_path() {
@@ -2782,16 +2789,15 @@ service_is_waiting() {
   local active_state
   local sub_state
   local lock_path
-  local main_pid
+  local main_command
   active_state="$(service_active_state "$service")"
   sub_state="$(service_sub_state "$service")"
   [ "$active_state" = "activating" ] && [ "$sub_state" = "start" ] || return 1
   lock_path="$(service_lock_path "$service" || true)"
   [ -n "$lock_path" ] || return 1
   /usr/sbin/fuser "$lock_path" >/dev/null 2>&1 || return 1
-  main_pid="$(service_main_pid "$service")"
-  [ -n "$main_pid" ] && [ "$main_pid" != "0" ] || return 1
-  /usr/bin/ps -o command= -p "$main_pid" 2>/dev/null | grep -q -- 'flock '
+  main_command="$(service_main_command "$service")"
+  printf '%s\n' "$main_command" | grep -q -- '^/usr/bin/flock '
 }
 
 service_runtime_status_label() {
@@ -3510,7 +3516,7 @@ menu() {
 case "${1:-menu}" in
   run-once) run_once "${2:-all}" ;;
   run-duplicates) run_duplicates_once ;;
-  run-proxy-assign) run_proxy_assign_once ;;
+  run-proxy-assign) run_proxy_assign_now ;;
   run-proxy-assign-now) run_proxy_assign_now ;;
   show-config) show_config ;;
   preflight) preflight_runtime ;;
