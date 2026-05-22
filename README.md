@@ -1,6 +1,6 @@
 # sub2test-installer
 
-Current release: `0.1.4`
+Current release: `0.1.6`
 
 - [中文](#中文)
 - [English](#english)
@@ -10,7 +10,7 @@ Current release: `0.1.4`
 
 ## 中文
 
-`sub2test-installer.sh` 当前发布版本为 `0.1.4`。
+`sub2test-installer.sh` 当前发布版本为 `0.1.6`。
 
 `sub2test-installer.sh` 用来给 Sub2API 部署一套独立的 `sub2test` 运行环境：自动发现数据库配置、调用管理端账号测活接口、把连续 `error` 的账号在达到阈值后自动设为 `disabled`，并可通过 systemd timer 定时执行。
 
@@ -55,6 +55,7 @@ sudo sub2test enable
 ```bash
 sudo sub2test show-config
 sudo sub2test run-once
+sudo sub2test run-proxy-assign-now
 sudo sub2test enable
 sudo sub2test disable
 sudo sub2test menu
@@ -66,6 +67,9 @@ sudo sub2test menu
 - 调用管理端 `/admin/accounts/{id}/test` 做账号测活
 - 本地持久化连续 `error` 次数到状态文件
 - 达到阈值后调用管理端 `/admin/accounts/{id}` 把账号置为 `disabled`
+- 支持未测 active 账号独立定时任务
+- 支持重复账号排查独立定时任务
+- 支持无代理账号批量分配 active 代理的独立定时任务
 - 支持固定每天某个时间执行
 - 支持每隔 N 小时执行一次
 - 保留旧的 `hourly / daily / weekly` 调度兼容方式
@@ -171,6 +175,64 @@ cat /opt/sub2test/state.json
 - `OnCalendar` 使用服务器本地时区，固定时间执行前请确认系统时区正确
 
 ### Release notes
+
+#### v0.1.6
+
+**中文**
+
+- 新增独立的代理分配任务，支持自动定时和手动执行
+- 代理分配支持 `index / random` 两种模式，并且只处理 `proxy_id IS NULL` 的账号
+- 修复代理分配运行时生成的 heredoc 转义问题
+- 修复运行概览对代理分配、重复账号摘要的显示
+- 修复被系统停止的任务状态展示，避免误显示为执行失败
+
+升级命令：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
+chmod +x /tmp/sub2test-installer.sh
+sudo bash /tmp/sub2test-installer.sh --force
+sudo sub2test preflight
+sudo systemctl daemon-reload
+sudo systemctl restart sub2test.timer
+sudo systemctl restart sub2test-untested.timer
+sudo systemctl restart sub2test-proxy-assign.timer
+sudo systemctl restart sub2test-duplicates.timer
+```
+
+注意：
+
+- 重启 `sub2test.service` 或 `sub2test-untested.service` 会立即执行一次任务
+- 如果只想刷新自动调度，不想立刻执行，请只重启对应的 `.timer`
+- 代理分配结果可用 `sudo /usr/local/bin/sub2test run-proxy-assign-now` 查看
+
+**English**
+
+- Added a standalone proxy-assignment task with both scheduled and manual execution paths
+- Proxy assignment now supports `index / random` modes and only processes accounts with `proxy_id IS NULL`
+- Fixed heredoc escaping in the generated proxy-assignment runtime script
+- Fixed runtime overview rendering for proxy-assignment and duplicate-account summaries
+- Fixed status labeling for system-stopped tasks so they are no longer shown as failures
+
+Upgrade command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
+chmod +x /tmp/sub2test-installer.sh
+sudo bash /tmp/sub2test-installer.sh --force
+sudo sub2test preflight
+sudo systemctl daemon-reload
+sudo systemctl restart sub2test.timer
+sudo systemctl restart sub2test-untested.timer
+sudo systemctl restart sub2test-proxy-assign.timer
+sudo systemctl restart sub2test-duplicates.timer
+```
+
+Notes:
+
+- Restarting `sub2test.service` or `sub2test-untested.service` will execute a task immediately
+- If you only want to refresh scheduling without triggering a run, restart only the corresponding `.timer`
+- Use `sudo /usr/local/bin/sub2test run-proxy-assign-now` to inspect proxy-assignment output
 
 #### v0.1.4
 
