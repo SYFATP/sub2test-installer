@@ -2732,9 +2732,31 @@ service_sub_state() {
   systemctl show "$service" --property=SubState --value 2>/dev/null || true
 }
 
+service_main_pid() {
+  local service="$1"
+  systemctl show "$service" --property=MainPID --value 2>/dev/null || true
+}
+
 service_is_running() {
   local service="$1"
-  [ "$(service_active_state "$service")" = "active" ]
+  local active_state
+  local sub_state
+  local lock_path
+  local main_pid
+  active_state="$(service_active_state "$service")"
+  sub_state="$(service_sub_state "$service")"
+
+  if [ "$active_state" = "active" ]; then
+    return 0
+  fi
+
+  [ "$active_state" = "activating" ] && [ "$sub_state" = "start" ] || return 1
+  lock_path="$(service_lock_path "$service" || true)"
+  [ -n "$lock_path" ] || return 0
+  /usr/sbin/fuser "$lock_path" >/dev/null 2>&1 || return 1
+  main_pid="$(service_main_pid "$service")"
+  [ -n "$main_pid" ] && [ "$main_pid" != "0" ] || return 1
+  /usr/bin/ps -o command= -p "$main_pid" 2>/dev/null | grep -q -- 'run-once\|run-proxy-assign-now\|run-duplicates'
 }
 
 service_lock_path() {
@@ -2760,12 +2782,16 @@ service_is_waiting() {
   local active_state
   local sub_state
   local lock_path
+  local main_pid
   active_state="$(service_active_state "$service")"
   sub_state="$(service_sub_state "$service")"
   [ "$active_state" = "activating" ] && [ "$sub_state" = "start" ] || return 1
   lock_path="$(service_lock_path "$service" || true)"
   [ -n "$lock_path" ] || return 1
-  /usr/sbin/fuser "$lock_path" >/dev/null 2>&1
+  /usr/sbin/fuser "$lock_path" >/dev/null 2>&1 || return 1
+  main_pid="$(service_main_pid "$service")"
+  [ -n "$main_pid" ] && [ "$main_pid" != "0" ] || return 1
+  /usr/bin/ps -o command= -p "$main_pid" 2>/dev/null | grep -q -- 'flock '
 }
 
 service_runtime_status_label() {
