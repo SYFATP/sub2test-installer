@@ -1958,23 +1958,23 @@ t() {
     en:runtime_never_ran) echo "No execution record" ;;
     en:runtime_no_summary) echo "No summary recorded" ;;
     en:runtime_status_running) echo "Running" ;;
-    en:runtime_status_waiting) echo "Waiting for shared lock" ;;
+    en:runtime_status_waiting) echo "Waiting for lock" ;;
     en:runtime_status_failed) echo "Failed" ;;
     en:runtime_status_inactive) echo "Idle" ;;
     en:runtime_status_unknown) echo "Unknown" ;;
-    en:manual_lock_starting) echo "Starting manual run with shared lock." ;;
-    en:manual_lock_failed) echo "Manual run failed to acquire the shared lock or exited with an error." ;;
+    en:manual_lock_starting) echo "Starting manual run with lock." ;;
+    en:manual_lock_failed) echo "Manual run failed to acquire the lock or exited with an error." ;;
     en:edit_intro) echo "Starting interactive edit. Press Enter to keep the current value." ;;
     en:config_after) echo "Updated task summary:" ;;
     en:invalid_option) echo "Invalid option" ;;
     en:manual_conflict_full_running) echo "Full automatic task is currently running." ;;
-    en:manual_conflict_full_waiting) echo "Full automatic task is queued and waiting for the shared lock." ;;
+    en:manual_conflict_full_waiting) echo "Full automatic task is queued and waiting for its lock." ;;
     en:manual_conflict_untested_running) echo "Untested automatic task is currently running." ;;
-    en:manual_conflict_untested_waiting) echo "Untested automatic task is queued and waiting for the shared lock." ;;
+    en:manual_conflict_untested_waiting) echo "Untested automatic task is queued and waiting for its lock." ;;
     en:manual_conflict_duplicates_running) echo "Duplicate-account automatic task is currently running." ;;
-    en:manual_conflict_duplicates_waiting) echo "Duplicate-account automatic task is queued and waiting for the shared lock." ;;
+    en:manual_conflict_duplicates_waiting) echo "Duplicate-account automatic task is queued and waiting for its lock." ;;
     en:manual_conflict_proxy_assign_running) echo "Proxy-assignment automatic task is currently running." ;;
-    en:manual_conflict_proxy_assign_waiting) echo "Proxy-assignment automatic task is queued and waiting for the shared lock." ;;
+    en:manual_conflict_proxy_assign_waiting) echo "Proxy-assignment automatic task is queued and waiting for its lock." ;;
     en:menu_enable_proxy_assign) echo "Enable proxy-assignment task" ;;
     en:menu_disable_proxy_assign) echo "Disable proxy-assignment task" ;;
     en:proxy_assign_menu_title) echo "Proxy-assignment task menu" ;;
@@ -2114,23 +2114,23 @@ t() {
     zh:runtime_never_ran) echo "暂无执行记录" ;;
     zh:runtime_no_summary) echo "最近一次未产生汇总" ;;
     zh:runtime_status_running) echo "正在执行" ;;
-    zh:runtime_status_waiting) echo "排队等待共享锁" ;;
+    zh:runtime_status_waiting) echo "排队等待锁" ;;
     zh:runtime_status_failed) echo "执行失败" ;;
     zh:runtime_status_inactive) echo "空闲" ;;
     zh:runtime_status_unknown) echo "未知" ;;
-    zh:manual_lock_starting) echo "开始通过共享锁执行手动任务。" ;;
-    zh:manual_lock_failed) echo "手动任务获取共享锁失败或执行出错。" ;;
+    zh:manual_lock_starting) echo "开始通过锁执行手动任务。" ;;
+    zh:manual_lock_failed) echo "手动任务获取锁失败或执行出错。" ;;
     zh:edit_intro) echo "下面开始逐项编辑；直接回车表示保持当前值。" ;;
     zh:config_after) echo "修改后的自动任务说明：" ;;
     zh:invalid_option) echo "无效选项" ;;
     zh:manual_conflict_full_running) echo "全量自动任务正在执行。" ;;
-    zh:manual_conflict_full_waiting) echo "全量自动任务正在排队等待共享锁。" ;;
+    zh:manual_conflict_full_waiting) echo "全量自动任务正在排队等待它的锁。" ;;
     zh:manual_conflict_untested_running) echo "未测自动任务正在执行。" ;;
-    zh:manual_conflict_untested_waiting) echo "未测自动任务正在排队等待共享锁。" ;;
+    zh:manual_conflict_untested_waiting) echo "未测自动任务正在排队等待它的锁。" ;;
     zh:manual_conflict_duplicates_running) echo "重复账号排查自动任务正在执行。" ;;
-    zh:manual_conflict_duplicates_waiting) echo "重复账号排查自动任务正在排队等待共享锁。" ;;
+    zh:manual_conflict_duplicates_waiting) echo "重复账号排查自动任务正在排队等待它的锁。" ;;
     zh:manual_conflict_proxy_assign_running) echo "代理分配自动任务正在执行。" ;;
-    zh:manual_conflict_proxy_assign_waiting) echo "代理分配自动任务正在排队等待共享锁。" ;;
+    zh:manual_conflict_proxy_assign_waiting) echo "代理分配自动任务正在排队等待它的锁。" ;;
     zh:menu_enable_proxy_assign) echo "启用代理分配任务" ;;
     zh:menu_disable_proxy_assign) echo "禁用代理分配任务" ;;
     zh:proxy_assign_menu_title) echo "代理分配任务菜单" ;;
@@ -2226,7 +2226,7 @@ t() {
     zh:label_admin_api_key) echo "管理端 API Key" ;;
     zh:label_error_threshold) echo "连续报错多少次后停用账号" ;;
     zh:label_state_file) echo "本地状态文件路径" ;;
-    zh:label_lock_wait_seconds) echo "共享锁最多等待多少秒（0 表示不等待）" ;;
+    zh:label_lock_wait_seconds) echo "等待锁最多多少秒（0 表示不等待）" ;;
     zh:label_untested_enabled) echo "是否启用未测账号自动任务" ;;
     zh:label_untested_every_minutes) echo "未测任务每隔多少分钟执行一次（5-720）" ;;
     zh:label_untested_delay) echo "未测任务随机延迟秒数" ;;
@@ -2264,7 +2264,7 @@ show_config() {
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}    # 管理端 API Key"
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
-  echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}    # 共享锁最多等待秒数，0 表示不等待"
+  echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}    # 等待锁最多秒数，0 表示不等待"
   echo "SUB2TEST_PROXY_ASSIGN_ENABLED=${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}    # 是否启用代理分配任务"
   echo "SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES=${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}    # 代理分配任务每隔多少分钟执行一次"
   echo "SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}    # 代理分配任务 systemd 随机延迟秒数"
