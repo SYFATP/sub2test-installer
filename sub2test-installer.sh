@@ -181,6 +181,14 @@ SUB2TEST_UNTESTED_ENABLED={keep("SUB2TEST_UNTESTED_ENABLED", "false")}
 SUB2TEST_UNTESTED_EVERY_MINUTES={keep("SUB2TEST_UNTESTED_EVERY_MINUTES", untested_every_minutes_default)}
 # 未测试 active 账号 systemd RandomizedDelaySec
 SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS={keep("SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS", "120")}
+# 是否启用重复账号排查任务：true / false
+SUB2TEST_DUPLICATES_ENABLED={keep("SUB2TEST_DUPLICATES_ENABLED", "false")}
+# 重复账号排查每隔多少分钟执行一次（5-720）
+SUB2TEST_DUPLICATES_EVERY_MINUTES={keep("SUB2TEST_DUPLICATES_EVERY_MINUTES", "60")}
+# 重复账号排查 systemd RandomizedDelaySec
+SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS={keep("SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS", "120")}
+# 排查重复时是否跳过停用账号：true / false
+SUB2TEST_DUPLICATES_SKIP_INACTIVE={keep("SUB2TEST_DUPLICATES_SKIP_INACTIVE", "true")}
 # 是否启用 systemd 定时任务：true / false
 SUB2TEST_ENABLED={keep("SUB2TEST_ENABLED", "false")}
 # 兼容旧配置：hourly / daily / weekly
@@ -356,16 +364,17 @@ systemd_randomized_delay_for() {
 }
 
 systemd_minutes_calendar_for() {
-  python3 - "$1" <<'PY_EVERY_MINUTES'
+  python3 - "$1" "$2" <<'PY_EVERY_MINUTES'
 import sys
 value = (sys.argv[1] or '').strip()
+label = (sys.argv[2] or 'interval').strip() or 'interval'
 try:
     minutes = int(value)
 except Exception:
-    print('untested every-minutes must be an integer between 5 and 720', file=sys.stderr)
+    print(f'{label} must be an integer between 5 and 720', file=sys.stderr)
     sys.exit(1)
 if minutes < 5 or minutes > 720:
-    print('untested every-minutes must be between 5 and 720', file=sys.stderr)
+    print(f'{label} must be between 5 and 720', file=sys.stderr)
     sys.exit(1)
 print(minutes)
 PY_EVERY_MINUTES
@@ -379,7 +388,9 @@ validate_runtime_numeric_config() {
   systemd_lock_wait_seconds "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" >/dev/null
   systemd_randomized_delay_for "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" >/dev/null
   systemd_randomized_delay_for "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" >/dev/null
-  systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" >/dev/null
+  systemd_randomized_delay_for "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" >/dev/null
+  systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "untested every-minutes" >/dev/null
+  systemd_minutes_calendar_for "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "duplicates every-minutes" >/dev/null
   if [ -n "${SUB2TEST_EVERY_HOURS:-}" ]; then
     systemd_calendar_for "" "${SUB2TEST_EVERY_HOURS:-}" "daily" "false" >/dev/null
   fi
@@ -427,11 +438,29 @@ Description=Run sub2test for untested active accounts periodically
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}")min
+OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "untested every-minutes")min
 AccuracySec=1s
 Persistent=true
 RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}")
 Unit=sub2test-untested.service
+
+[Install]
+WantedBy=timers.target
+EOF_TIMER
+}
+
+render_duplicates_timer() {
+  cat > /etc/systemd/system/sub2test-duplicates.timer <<EOF_TIMER
+[Unit]
+Description=Run sub2test duplicate-account check periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "duplicates every-minutes")min
+AccuracySec=1s
+Persistent=true
+RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}")
+Unit=sub2test-duplicates.service
 
 [Install]
 WantedBy=timers.target
@@ -744,6 +773,225 @@ build_account_order_clause() {
   esac
 }
 
+run_duplicate_check() {
+  preflight_runtime
+  local rows_json=""
+  local rows_tsv=""
+  rows_json="$(mktemp)"
+  cleanup_run_duplicate_check() {
+    rm -f -- "${rows_json:-}" "${rows_tsv:-}"
+  }
+  trap cleanup_run_duplicate_check RETURN
+
+  if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    rows_tsv="$(mktemp)"
+    docker exec \
+      -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
+      "$SUB2TEST_DB_CONTAINER" \
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), status FROM accounts WHERE deleted_at IS NULL ORDER BY name ASC, id ASC" > "$rows_tsv"
+    python3 - "$rows_tsv" "$rows_json" <<'PY_EXPORT_CONTAINER_DUPLICATES'
+import json
+import sys
+
+input_path = sys.argv[1]
+output_path = sys.argv[2]
+
+with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', encoding='utf-8') as out:
+    for raw_line in src:
+        line = raw_line.rstrip('\n')
+        if not line:
+            continue
+        parts = line.split('\t', 2)
+        if len(parts) != 3:
+            continue
+        account_id, name, status = parts
+        out.write(json.dumps({
+            'id': int(account_id),
+            'name': name,
+            'status': status,
+        }, ensure_ascii=False) + '\n')
+PY_EXPORT_CONTAINER_DUPLICATES
+  else
+    python3 - "$rows_json" <<'PY_EXPORT_DUPLICATES'
+import json
+import os
+import sys
+
+import psycopg2
+
+output_path = sys.argv[1]
+
+conn = psycopg2.connect(
+    host=os.environ['SUB2TEST_DB_HOST'],
+    port=os.environ['SUB2TEST_DB_PORT'],
+    user=os.environ['SUB2TEST_DB_USER'],
+    password=os.getenv('SUB2TEST_DB_PASSWORD', ''),
+    dbname=os.environ['SUB2TEST_DB_NAME'],
+    sslmode=os.getenv('SUB2TEST_DB_SSLMODE', 'disable'),
+)
+cur = conn.cursor()
+cur.execute(
+    """
+    SELECT id, COALESCE(name, ''), status
+    FROM accounts
+    WHERE deleted_at IS NULL
+    ORDER BY name ASC, id ASC
+    """
+)
+rows = cur.fetchall()
+cur.close()
+conn.close()
+
+with open(output_path, 'w', encoding='utf-8') as fh:
+    for account_id, name, status in rows:
+        fh.write(json.dumps({
+            'id': account_id,
+            'name': name or '',
+            'status': status,
+        }, ensure_ascii=False) + '\n')
+PY_EXPORT_DUPLICATES
+  fi
+
+  python3 - "$rows_json" <<'PY_RUN_DUPLICATE_CHECK'
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from collections import defaultdict
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
+rows_path = sys.argv[1]
+skip_inactive = (os.getenv('SUB2TEST_DUPLICATES_SKIP_INACTIVE', 'true') or 'true').strip().lower() == 'true'
+api_base_url = (os.getenv('SUB2TEST_API_BASE_URL', '') or '').strip().rstrip('/')
+admin_api_key = (os.getenv('SUB2TEST_ADMIN_API_KEY', '') or '').strip()
+timeout_seconds = int((os.getenv('SUB2TEST_TIMEOUT_SECONDS', '30') or '30').strip())
+
+with open(rows_path, 'r', encoding='utf-8') as fh:
+    rows = [json.loads(line) for line in fh if line.strip()]
+
+headers = {
+    'x-api-key': admin_api_key,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+}
+
+def shorten_detail(detail: str) -> str:
+    detail = '' if detail is None else str(detail)
+    detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+    detail = detail.strip().replace('\n', ' ')
+    detail = ' '.join(detail.split())
+    return detail[:180]
+
+
+def response_error_detail(status_code, body_bytes):
+    try:
+        body = body_bytes.decode('utf-8', errors='replace').strip() if body_bytes else ''
+    except Exception:
+        body = ''
+    if body:
+        return shorten_detail(body)
+    return shorten_detail(f'HTTP {status_code}')
+
+
+def safe_exception_text(exc: Exception) -> str:
+    try:
+        text = str(exc)
+    except Exception:
+        text = repr(exc)
+    if not text:
+        text = exc.__class__.__name__
+    return shorten_detail(text)
+
+
+def update_account_fields(account_id: int, payload: dict):
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    for method in ('PATCH', 'PUT'):
+        req = urllib.request.Request(
+            f'{api_base_url}/admin/accounts/{account_id}',
+            data=body,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+                return True, getattr(response, 'status', None) or response.getcode(), ''
+        except urllib.error.HTTPError as err:
+            if method == 'PATCH' and err.code in (404, 405):
+                continue
+            return False, err.code, response_error_detail(err.code, err.read())
+        except Exception as exc:
+            return False, None, safe_exception_text(exc)
+    return False, None, 'update request failed'
+
+
+def detect_note_field() -> str | None:
+    if not rows:
+        return None
+    sample_id = int(rows[0]['id'])
+    unknown_markers = ('unknown field', 'unknown_fields', 'extra fields', 'not allowed', 'unrecognized')
+    for field_name in ('note', 'remarks', 'remark', 'comment', 'description'):
+        success, status_code, detail = update_account_fields(sample_id, {field_name: '账号重复'})
+        detail_lower = (detail or '').lower()
+        if success:
+            rollback_success, rollback_status, rollback_detail = update_account_fields(sample_id, {field_name: ''})
+            if rollback_success:
+                print(f'duplicate_note_field field={field_name}')
+                return field_name
+            print(f'duplicate_note_field field={field_name} rollback_failed status={rollback_status or "unknown"} detail={shorten_detail(rollback_detail)}')
+            return field_name
+        if status_code in (400, 422) and any(marker in detail_lower for marker in unknown_markers):
+            continue
+    print('duplicate_note_field field=none')
+    return None
+
+
+groups = defaultdict(list)
+for row in rows:
+    name = (row.get('name') or '').strip()
+    if not name:
+        continue
+    if skip_inactive and (row.get('status') or '').strip() == 'inactive':
+        continue
+    groups[name].append(row)
+
+duplicate_groups = []
+for name in sorted(groups):
+    members = sorted(groups[name], key=lambda item: int(item.get('id', 0)))
+    if len(members) > 1:
+        duplicate_groups.append((name, members))
+
+note_field = detect_note_field() if duplicate_groups else None
+note_value = '账号重复'
+disabled_count = 0
+failed_count = 0
+
+for name, members in duplicate_groups:
+    keep = members[0]
+    disable_members = members[1:]
+    disable_ids = ','.join(str(int(item['id'])) for item in disable_members)
+    print(f'duplicate name={name} keep_id={int(keep["id"])} disable_ids={disable_ids}')
+    for item in disable_members:
+        payload = {'status': 'inactive'}
+        if note_field:
+            payload[note_field] = note_value
+        success, status_code, detail = update_account_fields(int(item['id']), payload)
+        if success:
+            disabled_count += 1
+            print(f'duplicate_disable id={int(item["id"])} status=success note={(note_value if note_field else "none")}')
+        else:
+            failed_count += 1
+            print(f'duplicate_disable id={int(item["id"])} status=failed http_status={status_code or "unknown"} detail={shorten_detail(detail)}')
+
+print(f'duplicate_summary groups={len(duplicate_groups)} disabled={disabled_count} failed={failed_count} skip_inactive={str(skip_inactive).lower()} note_field={note_field or "none"}')
+PY_RUN_DUPLICATE_CHECK
+}
+
 run_health_check() {
   preflight_runtime
   local mode="${1:-all}"
@@ -1024,8 +1272,8 @@ def apply_account_state(account_state: dict, native_status: str, streak_count: i
         account_state.pop('disabled_by_sub2test_at', None)
 
 
-def update_account_status(account_id: int, status: str):
-    body = json.dumps({'status': status}).encode('utf-8')
+def update_account_fields(account_id: int, payload: dict):
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     headers = {
         'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
         'Content-Type': 'application/json',
@@ -1047,7 +1295,15 @@ def update_account_status(account_id: int, status: str):
             return False, err.code, response_error_detail(err.code, err.read())
         except Exception as exc:
             return False, None, safe_exception_text(exc)
-    return False, None, f'{status} request failed'
+    return False, None, 'update request failed'
+
+
+def update_account_status(account_id: int, status: str):
+    return update_account_fields(account_id, {'status': status})
+
+
+def mark_account_error(account_id: int):
+    return update_account_status(account_id, 'error')
 
 
 def disable_account(account_id: int):
@@ -1111,7 +1367,7 @@ def classify_error_text(http_status: int | None, text: str) -> str:
     raw = shorten_detail(text).lower()
     if http_status == 429 or any(keyword in raw for keyword in ('429', 'rate_limit', 'rate limit', 'too many request')):
         return 'rate_limited'
-    if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'token invalid', 'login again', 'sign in again', 'authentication token')):
+    if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'token invalid', 'login again', 'sign in again', 'authentication token', 'no access token available')):
         return 'error'
     if raw:
         return 'unknown'
@@ -1221,6 +1477,10 @@ def run_account_test(row):
     disable_success = False
     disable_detail = ''
     disable_status = None
+    mark_error_attempted = False
+    mark_error_success = False
+    mark_error_detail = ''
+    mark_error_status = None
     enable_attempted = False
     enable_success = False
     enable_detail = ''
@@ -1240,6 +1500,11 @@ def run_account_test(row):
         keep_inactive_success, keep_inactive_status, keep_inactive_detail = disable_account(int(account_id))
         if not keep_inactive_success:
             keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
+    elif source_status == 'active' and native_status == 'error':
+        mark_error_attempted = True
+        mark_error_success, mark_error_status, mark_error_detail = mark_account_error(int(account_id))
+        if not mark_error_success:
+            mark_error_detail = shorten_detail(mark_error_detail or (f'HTTP {mark_error_status}' if mark_error_status else 'mark error request failed'))
     elif disable_needed:
         disable_attempted = True
         disable_success, disable_status, disable_detail = disable_account(int(account_id))
@@ -1261,6 +1526,10 @@ def run_account_test(row):
         'disable_success': disable_success,
         'disable_status': disable_status,
         'disable_detail': disable_detail,
+        'mark_error_attempted': mark_error_attempted,
+        'mark_error_success': mark_error_success,
+        'mark_error_status': mark_error_status,
+        'mark_error_detail': mark_error_detail,
         'enable_attempted': enable_attempted,
         'enable_success': enable_success,
         'enable_status': enable_status,
@@ -1287,6 +1556,11 @@ for batch_start in range(0, len(rows), batch_size):
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
             message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} streak={item['streak_count']} detail={item['detail']}"
+            if item['mark_error_attempted']:
+                if item['mark_error_success']:
+                    message += ' mark_error=success'
+                else:
+                    message += f" mark_error=failed mark_error_detail={item['mark_error_detail']}"
             if item['enable_attempted']:
                 if item['enable_success']:
                     message += ' enable=success'
@@ -1413,6 +1687,8 @@ t() {
     en:manual_conflict_full_waiting) echo "Full automatic task is queued and waiting for the shared lock." ;;
     en:manual_conflict_untested_running) echo "Untested automatic task is currently running." ;;
     en:manual_conflict_untested_waiting) echo "Untested automatic task is queued and waiting for the shared lock." ;;
+    en:manual_conflict_duplicates_running) echo "Duplicate-account automatic task is currently running." ;;
+    en:manual_conflict_duplicates_waiting) echo "Duplicate-account automatic task is queued and waiting for the shared lock." ;;
     en:manual_conflict_prompt) echo "Stop the running or queued automatic task(s) and continue with this manual run? [y/N]" ;;
     en:manual_conflict_cancelled) echo "Manual run cancelled." ;;
     en:manual_conflict_stopping) echo "Stopping automatic task(s)..." ;;
@@ -1420,10 +1696,24 @@ t() {
     en:manual_conflict_stop_failed) echo "Automatic task(s) are still stopping or waiting. Please try again." ;;
     en:menu_enable_full) echo "Enable full automatic task" ;;
     en:menu_disable_full) echo "Disable full automatic task" ;;
-    en:menu_enable_untested) echo "Enable untested automatic task" ;;
-    en:menu_disable_untested) echo "Disable untested automatic task" ;;
-    en:menu_edit) echo "Edit global parameters" ;;
+    en:menu_edit) echo "Edit global config" ;;
+    en:menu_enable_duplicates) echo "Enable duplicate-account check" ;;
+    en:menu_disable_duplicates) echo "Disable duplicate-account check" ;;
+    en:duplicates_menu_title) echo "Duplicate-account task menu" ;;
+    en:duplicates_menu_config) echo "Edit duplicate-account config" ;;
+    en:duplicates_menu_enable) echo "Enable duplicate-account task" ;;
+    en:duplicates_menu_disable) echo "Disable duplicate-account task" ;;
+    en:duplicates_menu_show_log) echo "Show last duplicate-account log" ;;
+    en:duplicates_config_title) echo "Current duplicate-account task parameters:" ;;
+    en:duplicates_task) echo "Duplicate-account check" ;;
+    en:duplicates_scope) echo " (checks duplicate names and disables extra accounts)" ;;
+    en:label_duplicates_enabled) echo "Enable duplicate-account task" ;;
+    en:label_duplicates_every_minutes) echo "Run duplicate-account check every N minutes (5-720)" ;;
+    en:label_duplicates_delay) echo "Duplicate-account random delay seconds" ;;
+    en:label_duplicates_skip_inactive) echo "Skip inactive accounts when checking duplicates" ;;
+    en:last_duplicates_log_title) echo "Last duplicate-account log:" ;;
     en:menu_full_task) echo "Full task menu" ;;
+    en:menu_duplicates_task) echo "Duplicate-account task menu" ;;
     en:menu_untested_task) echo "Untested task menu" ;;
     en:menu_manual_run) echo "Manual run menu" ;;
     en:menu_back) echo "Back (0)" ;;
@@ -1532,6 +1822,8 @@ t() {
     zh:manual_conflict_full_waiting) echo "全量自动任务正在排队等待共享锁。" ;;
     zh:manual_conflict_untested_running) echo "未测自动任务正在执行。" ;;
     zh:manual_conflict_untested_waiting) echo "未测自动任务正在排队等待共享锁。" ;;
+    zh:manual_conflict_duplicates_running) echo "重复账号排查自动任务正在执行。" ;;
+    zh:manual_conflict_duplicates_waiting) echo "重复账号排查自动任务正在排队等待共享锁。" ;;
     zh:manual_conflict_prompt) echo "是否停止这些正在执行或排队的自动任务，并继续本次手动执行？[y/N]" ;;
     zh:manual_conflict_cancelled) echo "已取消本次手动执行。" ;;
     zh:manual_conflict_stopping) echo "正在停止自动任务..." ;;
@@ -1539,10 +1831,24 @@ t() {
     zh:manual_conflict_stop_failed) echo "自动任务仍在停止或等待中，请稍后重试。" ;;
     zh:menu_enable_full) echo "启用自动任务" ;;
     zh:menu_disable_full) echo "禁用自动任务" ;;
-    zh:menu_enable_untested) echo "启用未测试 active 账号自动任务" ;;
-    zh:menu_disable_untested) echo "禁用未测试 active 账号自动任务" ;;
-    zh:menu_edit) echo "编辑全局参数" ;;
+    zh:menu_edit) echo "编辑全局配置" ;;
+    zh:menu_enable_duplicates) echo "启用重复账号排查任务" ;;
+    zh:menu_disable_duplicates) echo "禁用重复账号排查任务" ;;
+    zh:duplicates_menu_title) echo "重复账号任务菜单" ;;
+    zh:duplicates_menu_config) echo "编辑重复账号任务配置" ;;
+    zh:duplicates_menu_enable) echo "启用重复账号排查任务" ;;
+    zh:duplicates_menu_disable) echo "禁用重复账号排查任务" ;;
+    zh:duplicates_menu_show_log) echo "查看上次重复账号排查日志" ;;
+    zh:duplicates_config_title) echo "当前重复账号任务参数：" ;;
+    zh:duplicates_task) echo "重复账号排查" ;;
+    zh:duplicates_scope) echo "（排查同名重复账号并停用多余记录）" ;;
+    zh:label_duplicates_enabled) echo "是否启用重复账号排查任务" ;;
+    zh:label_duplicates_every_minutes) echo "重复账号排查每隔多少分钟执行一次（5-720）" ;;
+    zh:label_duplicates_delay) echo "重复账号任务随机延迟秒数" ;;
+    zh:label_duplicates_skip_inactive) echo "排查重复时是否跳过停用账号" ;;
+    zh:last_duplicates_log_title) echo "上次重复账号排查日志：" ;;
     zh:menu_full_task) echo "全量任务菜单" ;;
+    zh:menu_duplicates_task) echo "重复账号任务菜单" ;;
     zh:menu_untested_task) echo "未测任务菜单" ;;
     zh:menu_manual_run) echo "手动执行菜单" ;;
     zh:menu_back) echo "返回上一级（0）" ;;
@@ -1633,10 +1939,14 @@ show_config() {
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
   echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}    # 共享锁最多等待秒数，0 表示不等待"
-  echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}    # 是否启用未测试 active 账号定时任务"
+  echo "SUB2TEST_DUPLICATES_ENABLED=${SUB2TEST_DUPLICATES_ENABLED:-false}    # 是否启用重复账号排查任务"
+  echo "SUB2TEST_DUPLICATES_EVERY_MINUTES=${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}    # 重复账号排查每隔多少分钟执行一次"
+  echo "SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}    # 重复账号排查 systemd 随机延迟秒数"
+  echo "SUB2TEST_DUPLICATES_SKIP_INACTIVE=${SUB2TEST_DUPLICATES_SKIP_INACTIVE:-true}    # 排查重复时是否跳过停用账号"
+  echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}    # 是否启用未测试 active 账号独立定时任务"
   echo "SUB2TEST_UNTESTED_EVERY_MINUTES=${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}    # 未测试 active 账号每隔多少分钟执行一次"
   echo "SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}    # 未测试 active 账号 systemd 随机延迟秒数"
-  echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用定时任务"
+  echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用全量自动任务"
   echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}    # 兼容旧定时频率"
   echo "SUB2TEST_DAILY_AT=${SUB2TEST_DAILY_AT:-}    # 每天执行时间，格式 HH:MM"
   echo "SUB2TEST_EVERY_HOURS=${SUB2TEST_EVERY_HOURS:-}    # 每隔几小时执行一次"
@@ -1663,6 +1973,10 @@ show_global_config() {
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}"
   echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}"
+  echo "SUB2TEST_DUPLICATES_ENABLED=${SUB2TEST_DUPLICATES_ENABLED:-false}"
+  echo "SUB2TEST_DUPLICATES_EVERY_MINUTES=${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}"
+  echo "SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}"
+  echo "SUB2TEST_DUPLICATES_SKIP_INACTIVE=${SUB2TEST_DUPLICATES_SKIP_INACTIVE:-true}"
   echo "SUB2TEST_CONCURRENCY=${SUB2TEST_CONCURRENCY:-3}"
   echo "SUB2TEST_TIMEOUT_SECONDS=${SUB2TEST_TIMEOUT_SECONDS:-30}"
   echo "SUB2TEST_SLEEP_MIN_SECONDS=${SUB2TEST_SLEEP_MIN_SECONDS:-3}"
@@ -1683,6 +1997,14 @@ show_untested_task_config() {
   echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}"
   echo "SUB2TEST_UNTESTED_EVERY_MINUTES=${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}"
   echo "SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}"
+}
+
+show_duplicates_task_config() {
+  echo "$(t duplicates_config_title)"
+  echo "SUB2TEST_DUPLICATES_ENABLED=${SUB2TEST_DUPLICATES_ENABLED:-false}"
+  echo "SUB2TEST_DUPLICATES_EVERY_MINUTES=${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}"
+  echo "SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}"
+  echo "SUB2TEST_DUPLICATES_SKIP_INACTIVE=${SUB2TEST_DUPLICATES_SKIP_INACTIVE:-true}"
 }
 
 schedule_summary() {
@@ -1825,12 +2147,16 @@ reload_timers_if_enabled() {
   preflight_runtime
   render_timer
   render_untested_timer
+  render_duplicates_timer
   systemctl daemon-reload
   if systemctl is-enabled sub2test.timer >/dev/null 2>&1; then
     systemctl restart sub2test.timer
   fi
   if systemctl is-enabled sub2test-untested.timer >/dev/null 2>&1; then
     systemctl restart sub2test-untested.timer
+  fi
+  if systemctl is-enabled sub2test-duplicates.timer >/dev/null 2>&1; then
+    systemctl restart sub2test-duplicates.timer
   fi
   . "$SUB2TEST_CONFIG_FILE"
 }
@@ -1839,9 +2165,11 @@ show_task_summaries() {
   echo "$(t config_intro)"
   echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
   echo "- $(t untested_task)：$(untested_schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
+  echo "- $(t duplicates_task)：$(untested_schedule_summary "${SUB2TEST_DUPLICATES_ENABLED:-false}" "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t duplicates_scope)")"
   echo "$(t runtime_overview_title)"
   show_service_runtime_summary sub2test.service "$(t full_task)"
   show_service_runtime_summary sub2test-untested.service "$(t untested_task)"
+  show_service_runtime_summary sub2test-duplicates.service "$(t duplicates_task)"
 }
 
 edit_global_config() {
@@ -1866,6 +2194,7 @@ edit_global_config() {
   edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "$(t label_error_threshold)"
   edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}" "$(t label_state_file)"
   edit_value SUB2TEST_LOCK_WAIT_SECONDS "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" "$(t label_lock_wait_seconds)"
+  edit_value SUB2TEST_DUPLICATES_SKIP_INACTIVE "${SUB2TEST_DUPLICATES_SKIP_INACTIVE:-true}" "$(t label_duplicates_skip_inactive)"
   edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}" "$(t label_concurrency)"
   edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}" "$(t label_timeout)"
   edit_value SUB2TEST_SLEEP_MIN_SECONDS "${SUB2TEST_SLEEP_MIN_SECONDS:-3}" "$(t label_sleep_min)"
@@ -1905,6 +2234,46 @@ edit_untested_task_config() {
   echo "- $(t untested_task)：$(untested_schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
 }
 
+duplicates_task_menu() {
+  while true; do
+    . "$SUB2TEST_CONFIG_FILE"
+    echo
+    echo "$(t duplicates_menu_title)"
+    echo "- $(t duplicates_task)：$(untested_schedule_summary "${SUB2TEST_DUPLICATES_ENABLED:-false}" "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t duplicates_scope)")"
+    echo
+    echo "1) $(t duplicates_menu_config)"
+    echo "2) $(t duplicates_menu_enable)"
+    echo "3) $(t duplicates_menu_disable)"
+    echo "4) $(t duplicates_menu_show_log)"
+    echo "0) $(t menu_back)"
+    read -r -p "> " choice
+    case "$choice" in
+      1) edit_duplicates_task_config ;;
+      2) enable_duplicates_task ;;
+      3) disable_duplicates_task ;;
+      4) show_last_duplicates_log ;;
+      0) return 0 ;;
+      *) echo "$(t invalid_option)" ;;
+    esac
+  done
+}
+
+edit_duplicates_task_config() {
+  . "$SUB2TEST_CONFIG_FILE"
+  echo
+  show_duplicates_task_config
+  echo
+  echo "$(t edit_intro)"
+  echo
+  edit_value SUB2TEST_DUPLICATES_EVERY_MINUTES "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "$(t label_duplicates_every_minutes)"
+  edit_value SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_duplicates_delay)"
+  edit_value SUB2TEST_DUPLICATES_SKIP_INACTIVE "${SUB2TEST_DUPLICATES_SKIP_INACTIVE:-true}" "$(t label_duplicates_skip_inactive)"
+  reload_timers_if_enabled
+  echo
+  show_duplicates_task_config
+  echo "- $(t duplicates_task)：$(untested_schedule_summary "${SUB2TEST_DUPLICATES_ENABLED:-false}" "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t duplicates_scope)")"
+}
+
 show_last_full_log() {
   echo
   echo "$(t last_full_log_title)"
@@ -1915,6 +2284,12 @@ show_last_untested_log() {
   echo
   echo "$(t last_untested_log_title)"
   journalctl -u sub2test-untested.service -n 100 --no-pager || true
+}
+
+show_last_duplicates_log() {
+  echo
+  echo "$(t last_duplicates_log_title)"
+  journalctl -u sub2test-duplicates.service -n 100 --no-pager || true
 }
 
 switch_language() {
@@ -1961,7 +2336,7 @@ service_is_waiting() {
   local sub_state
   active_state="$(service_active_state "$service")"
   sub_state="$(service_sub_state "$service")"
-  [ "$active_state" = "activating" ] || [ "$sub_state" = "start" ]
+  [ "$active_state" = "activating" ] && [ "$sub_state" = "start" ]
 }
 
 service_runtime_status_label() {
@@ -2065,6 +2440,13 @@ print_automatic_task_conflicts() {
     echo "$(t manual_conflict_untested_waiting)"
     has_conflict=0
   fi
+  if service_is_running sub2test-duplicates.service; then
+    echo "$(t manual_conflict_duplicates_running)"
+    has_conflict=0
+  elif service_is_waiting sub2test-duplicates.service; then
+    echo "$(t manual_conflict_duplicates_waiting)"
+    has_conflict=0
+  fi
   return "$has_conflict"
 }
 
@@ -2073,6 +2455,9 @@ automatic_tasks_conflicting() {
     return 0
   fi
   if service_is_running sub2test-untested.service || service_is_waiting sub2test-untested.service; then
+    return 0
+  fi
+  if service_is_running sub2test-duplicates.service || service_is_waiting sub2test-duplicates.service; then
     return 0
   fi
   return 1
@@ -2091,6 +2476,7 @@ stop_automatic_tasks_for_manual_run() {
   local attempt
   systemctl stop sub2test.service >/dev/null 2>&1 || true
   systemctl stop sub2test-untested.service >/dev/null 2>&1 || true
+  systemctl stop sub2test-duplicates.service >/dev/null 2>&1 || true
   for attempt in 1 2 3 4 5; do
     if ! automatic_tasks_conflicting; then
       return 0
@@ -2139,12 +2525,18 @@ enable_task() {
   preflight_runtime
   render_timer
   render_untested_timer
+  render_duplicates_timer
   systemctl daemon-reload
   systemctl enable --now sub2test.timer
   if [ "${SUB2TEST_UNTESTED_ENABLED:-false}" = "true" ]; then
     systemctl enable --now sub2test-untested.timer
   else
     systemctl disable --now sub2test-untested.timer >/dev/null 2>&1 || true
+  fi
+  if [ "${SUB2TEST_DUPLICATES_ENABLED:-false}" = "true" ]; then
+    systemctl enable --now sub2test-duplicates.timer
+  else
+    systemctl disable --now sub2test-duplicates.timer >/dev/null 2>&1 || true
   fi
   echo "sub2test timer enabled"
 }
@@ -2159,6 +2551,16 @@ enable_untested_task() {
   echo "sub2test untested timer enabled"
 }
 
+enable_duplicates_task() {
+  save_config_value SUB2TEST_DUPLICATES_ENABLED true
+  . "$SUB2TEST_CONFIG_FILE"
+  preflight_runtime
+  render_duplicates_timer
+  systemctl daemon-reload
+  systemctl enable --now sub2test-duplicates.timer
+  echo "sub2test duplicates timer enabled"
+}
+
 disable_task() {
   save_config_value SUB2TEST_ENABLED false
   . "$SUB2TEST_CONFIG_FILE"
@@ -2171,6 +2573,13 @@ disable_untested_task() {
   . "$SUB2TEST_CONFIG_FILE"
   systemctl disable --now sub2test-untested.timer || true
   echo "sub2test untested timer disabled"
+}
+
+disable_duplicates_task() {
+  save_config_value SUB2TEST_DUPLICATES_ENABLED false
+  . "$SUB2TEST_CONFIG_FILE"
+  systemctl disable --now sub2test-duplicates.timer || true
+  echo "sub2test duplicates timer disabled"
 }
 
 edit_config() {
@@ -2251,7 +2660,8 @@ manual_run_menu() {
 uninstall_self() {
   systemctl disable --now sub2test.timer || true
   systemctl disable --now sub2test-untested.timer || true
-  rm -f /etc/systemd/system/sub2test.service /etc/systemd/system/sub2test.timer /etc/systemd/system/sub2test-untested.service /etc/systemd/system/sub2test-untested.timer "__LINK_FILE__"
+  systemctl disable --now sub2test-duplicates.timer || true
+  rm -f /etc/systemd/system/sub2test.service /etc/systemd/system/sub2test.timer /etc/systemd/system/sub2test-untested.service /etc/systemd/system/sub2test-untested.timer /etc/systemd/system/sub2test-duplicates.service /etc/systemd/system/sub2test-duplicates.timer "__LINK_FILE__"
   rm -rf "__INSTALL_ROOT__"
   echo "sub2test removed"
 }
@@ -2274,6 +2684,14 @@ run_once() {
   run_health_check "$mode"
 }
 
+run_duplicates_once() {
+  . "$SUB2TEST_CONFIG_FILE"
+  export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
+  export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
+  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_TIMEOUT_SECONDS SUB2TEST_DUPLICATES_SKIP_INACTIVE
+  run_duplicate_check
+}
+
 menu() {
   while true; do
     . "$SUB2TEST_CONFIG_FILE"
@@ -2286,20 +2704,22 @@ menu() {
     echo "1) $(t menu_edit)"
     echo "2) $(t menu_full_task)"
     echo "3) $(t menu_untested_task)"
-    echo "4) $(t menu_manual_run)"
-    echo "5) $(t menu_show_config)"
-    echo "6) $(t menu_switch_language)"
-    echo "7) $(t menu_uninstall)"
+    echo "4) $(t menu_duplicates_task)"
+    echo "5) $(t menu_manual_run)"
+    echo "6) $(t menu_show_config)"
+    echo "7) $(t menu_switch_language)"
+    echo "8) $(t menu_uninstall)"
     echo "0) $(t menu_exit)"
     read -r -p "> " choice
     case "$choice" in
       1) edit_config ;;
       2) full_task_menu ;;
       3) untested_task_menu ;;
-      4) manual_run_menu ;;
-      5) show_config ;;
-      6) switch_language ;;
-      7) uninstall_self; exit 0 ;;
+      4) duplicates_task_menu ;;
+      5) manual_run_menu ;;
+      6) show_config ;;
+      7) switch_language ;;
+      8) uninstall_self; exit 0 ;;
       0) exit 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
@@ -2308,14 +2728,17 @@ menu() {
 
 case "${1:-menu}" in
   run-once) run_once "${2:-all}" ;;
+  run-duplicates) run_duplicates_once ;;
   show-config) show_config ;;
   preflight) preflight_runtime ;;
   enable) enable_task ;;
   disable) disable_task ;;
   enable-untested) enable_untested_task ;;
   disable-untested) disable_untested_task ;;
+  enable-duplicates) enable_duplicates_task ;;
+  disable-duplicates) disable_duplicates_task ;;
   menu) menu ;;
-  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|show-config|preflight|enable|disable|enable-untested|disable-untested]" >&2; exit 1 ;;
+  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|run-duplicates|show-config|preflight|enable|disable|enable-untested|disable-untested|enable-duplicates|disable-duplicates]" >&2; exit 1 ;;
 esac
 '''
 content = content.replace('__CONFIG_FILE__', config_file)
@@ -2349,6 +2772,16 @@ Type=oneshot
 ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/run.lock $LINK_FILE run-once untested
 EOF
 
+cat > /etc/systemd/system/sub2test-duplicates.service <<EOF
+[Unit]
+Description=Sub2API external sub2test duplicate-account runner
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/run.lock $LINK_FILE run-duplicates
+EOF
+
 cat > "$SYSTEMD_TIMER" <<'EOF'
 [Unit]
 Description=Run sub2test periodically
@@ -2377,6 +2810,20 @@ Unit=sub2test-untested.service
 WantedBy=timers.target
 EOF
 
+cat > /etc/systemd/system/sub2test-duplicates.timer <<'EOF'
+[Unit]
+Description=Run sub2test duplicate-account check periodically
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=120
+Unit=sub2test-duplicates.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 ln -sf "$BIN_FILE" "$LINK_FILE"
 systemctl daemon-reload
 /usr/local/bin/sub2test show-config >/dev/null 2>&1 || true
@@ -2384,6 +2831,9 @@ systemctl daemon-reload
 /usr/local/bin/sub2test enable >/dev/null 2>&1 || true
 if grep -q '^SUB2TEST_UNTESTED_ENABLED=true$' "$CONFIG_FILE"; then
   /usr/local/bin/sub2test enable-untested >/dev/null 2>&1 || true
+fi
+if grep -q '^SUB2TEST_DUPLICATES_ENABLED=true$' "$CONFIG_FILE"; then
+  /usr/local/bin/sub2test enable-duplicates >/dev/null 2>&1 || true
 fi
 
 echo "sub2test installed"
