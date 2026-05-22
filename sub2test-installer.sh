@@ -3223,7 +3223,6 @@ case "${1:-menu}" in
   menu) menu ;;
   *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|run-duplicates|run-proxy-assign|show-config|preflight|enable|disable|enable-untested|disable-untested|enable-duplicates|disable-duplicates|enable-proxy-assign|disable-proxy-assign]" >&2; exit 1 ;;
 esac
-esac
 '''
 content = content.replace('__CONFIG_FILE__', config_file)
 content = content.replace('__COMPOSE_FILE__', compose_file)
@@ -3318,10 +3317,21 @@ Unit=sub2test-duplicates.service
 WantedBy=timers.target
 EOF
 
-render_timer
-render_untested_timer
-render_duplicates_timer
-render_proxy_assign_timer
+cat > /etc/systemd/system/sub2test-proxy-assign.timer <<'EOF'
+[Unit]
+Description=Run sub2test proxy assignment periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60min
+AccuracySec=1s
+Persistent=true
+RandomizedDelaySec=120
+Unit=sub2test-proxy-assign.service
+
+[Install]
+WantedBy=timers.target
+EOF
 
 ln -sf "$BIN_FILE" "$LINK_FILE"
 systemctl daemon-reload
