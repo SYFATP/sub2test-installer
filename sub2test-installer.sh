@@ -189,6 +189,16 @@ SUB2TEST_DUPLICATES_EVERY_MINUTES={keep("SUB2TEST_DUPLICATES_EVERY_MINUTES", "60
 SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS={keep("SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS", "120")}
 # 排查重复时是否跳过停用账号：true / false
 SUB2TEST_DUPLICATES_SKIP_INACTIVE={keep("SUB2TEST_DUPLICATES_SKIP_INACTIVE", "true")}
+# 是否启用代理分配任务：true / false
+SUB2TEST_PROXY_ASSIGN_ENABLED={keep("SUB2TEST_PROXY_ASSIGN_ENABLED", "false")}
+# 代理分配任务每隔多少分钟执行一次（5-720）
+SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES={keep("SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES", "60")}
+# 代理分配任务 systemd RandomizedDelaySec
+SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS={keep("SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS", "120")}
+# 代理分配模式：index / random
+SUB2TEST_PROXY_ASSIGN_MODE={keep("SUB2TEST_PROXY_ASSIGN_MODE", "index")}
+# 代理分配模式为 index 时，按 id ASC 取第几个 active 代理（从 1 开始）
+SUB2TEST_PROXY_ASSIGN_INDEX={keep("SUB2TEST_PROXY_ASSIGN_INDEX", "1")}
 # 是否启用 systemd 定时任务：true / false
 SUB2TEST_ENABLED={keep("SUB2TEST_ENABLED", "false")}
 # 兼容旧配置：hourly / daily / weekly
@@ -391,6 +401,8 @@ validate_runtime_numeric_config() {
   systemd_randomized_delay_for "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" >/dev/null
   systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "untested every-minutes" >/dev/null
   systemd_minutes_calendar_for "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "duplicates every-minutes" >/dev/null
+  systemd_randomized_delay_for "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}" >/dev/null
+  systemd_minutes_calendar_for "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "proxy-assign every-minutes" >/dev/null
   if [ -n "${SUB2TEST_EVERY_HOURS:-}" ]; then
     systemd_calendar_for "" "${SUB2TEST_EVERY_HOURS:-}" "daily" "false" >/dev/null
   fi
@@ -745,6 +757,24 @@ print('preflight checks passed')
 PY_PREFLIGHT_RUNTIME
 }
 
+render_proxy_assign_timer() {
+  cat > /etc/systemd/system/sub2test-proxy-assign.timer <<EOF_TIMER
+[Unit]
+Description=Run sub2test proxy assignment periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "proxy-assign every-minutes")min
+AccuracySec=1s
+Persistent=true
+RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}")
+Unit=sub2test-proxy-assign.service
+
+[Install]
+WantedBy=timers.target
+EOF_TIMER
+}
+
 build_account_where_clause() {
   case "${1:-all}" in
     error)
@@ -771,6 +801,258 @@ build_account_order_clause() {
       printf "%s" "CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC"
       ;;
   esac
+}
+
+run_proxy_assign() {
+  preflight_runtime
+  local rows_json=""
+  local rows_tsv=""
+  rows_json="$(mktemp)"
+  cleanup_run_proxy_assign() {
+    rm -f -- "${rows_json:-}" "${rows_tsv:-}"
+  }
+  trap cleanup_run_proxy_assign RETURN
+
+  if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    rows_tsv="$(mktemp)"
+    docker exec \
+      -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
+      "$SUB2TEST_DB_CONTAINER" \
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, proxy_id FROM accounts WHERE deleted_at IS NULL AND proxy_id IS NULL ORDER BY id ASC" > "$rows_tsv"
+    python3 - "$rows_tsv" "$rows_json" <<'PY_EXPORT_CONTAINER_PROXY_ASSIGN'
+import json
+import sys
+
+input_path = sys.argv[1]
+output_path = sys.argv[2]
+accounts = []
+
+with open(input_path, 'r', encoding='utf-8') as src:
+    for raw_line in src:
+        line = raw_line.rstrip('\n')
+        if not line:
+            continue
+        parts = line.split('\t', 1)
+        if len(parts) != 2:
+            continue
+        account_id, proxy_id = parts
+        accounts.append({'id': int(account_id), 'proxy_id': None if proxy_id in ('', '\\N') else int(proxy_id)})
+
+with open(output_path, 'w', encoding='utf-8') as out:
+    out.write(json.dumps({'accounts': accounts}, ensure_ascii=False))
+PY_EXPORT_CONTAINER_PROXY_ASSIGN
+  else
+    python3 - "$rows_json" <<'PY_EXPORT_PROXY_ASSIGN'
+import json
+import os
+import sys
+
+import psycopg2
+
+output_path = sys.argv[1]
+
+conn = psycopg2.connect(
+    host=os.environ['SUB2TEST_DB_HOST'],
+    port=os.environ['SUB2TEST_DB_PORT'],
+    user=os.environ['SUB2TEST_DB_USER'],
+    password=os.getenv('SUB2TEST_DB_PASSWORD', ''),
+    dbname=os.environ['SUB2TEST_DB_NAME'],
+    sslmode=os.getenv('SUB2TEST_DB_SSLMODE', 'disable'),
+)
+cur = conn.cursor()
+cur.execute(
+    """
+    SELECT id, proxy_id
+    FROM accounts
+    WHERE deleted_at IS NULL
+      AND proxy_id IS NULL
+    ORDER BY id ASC
+    """
+)
+accounts = [{'id': account_id, 'proxy_id': proxy_id} for account_id, proxy_id in cur.fetchall()]
+cur.close()
+conn.close()
+
+with open(output_path, 'w', encoding='utf-8') as fh:
+    fh.write(json.dumps({'accounts': accounts}, ensure_ascii=False))
+PY_EXPORT_PROXY_ASSIGN
+  fi
+
+  python3 - "$rows_json" <<'PY_RUN_PROXY_ASSIGN'
+import json
+import os
+import random
+import sys
+import urllib.error
+import urllib.request
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
+rows_path = sys.argv[1]
+api_base_url = (os.getenv('SUB2TEST_API_BASE_URL', '') or '').strip().rstrip('/')
+admin_api_key = (os.getenv('SUB2TEST_ADMIN_API_KEY', '') or '').strip()
+timeout_seconds = int((os.getenv('SUB2TEST_TIMEOUT_SECONDS', '30') or '30').strip())
+mode = (os.getenv('SUB2TEST_PROXY_ASSIGN_MODE', 'index') or 'index').strip().lower()
+index_raw = (os.getenv('SUB2TEST_PROXY_ASSIGN_INDEX', '1') or '1').strip()
+db_container = (os.getenv('SUB2TEST_DB_CONTAINER', '') or '').strip()
+
+with open(rows_path, 'r', encoding='utf-8') as fh:
+    payload = json.load(fh)
+
+accounts = payload.get('accounts') or []
+headers = {
+    'x-api-key': admin_api_key,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+}
+
+if mode not in ('index', 'random'):
+    print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=invalid_mode mode={mode}')
+    sys.exit(1)
+
+try:
+    proxy_index = int(index_raw)
+except Exception:
+    print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=invalid_index index={index_raw}')
+    sys.exit(1)
+if proxy_index < 1:
+    print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=invalid_index index={proxy_index}')
+    sys.exit(1)
+
+
+def shorten_detail(detail: str) -> str:
+    detail = '' if detail is None else str(detail)
+    detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+    detail = detail.strip().replace('\n', ' ')
+    detail = ' '.join(detail.split())
+    return detail[:180]
+
+
+def response_error_detail(status_code, body_bytes):
+    try:
+        body = body_bytes.decode('utf-8', errors='replace').strip() if body_bytes else ''
+    except Exception:
+        body = ''
+    if body:
+        return shorten_detail(body)
+    return shorten_detail(f'HTTP {status_code}')
+
+
+def safe_exception_text(exc: Exception) -> str:
+    try:
+        text = str(exc)
+    except Exception:
+        text = repr(exc)
+    if not text:
+        text = exc.__class__.__name__
+    return shorten_detail(text)
+
+
+def update_account_fields(account_id: int, update_payload: dict):
+    body = json.dumps(update_payload, ensure_ascii=False).encode('utf-8')
+    for method in ('PATCH', 'PUT'):
+        req = urllib.request.Request(
+            f'{api_base_url}/admin/accounts/{account_id}',
+            data=body,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+                return True, getattr(response, 'status', None) or response.getcode(), ''
+        except urllib.error.HTTPError as err:
+            if method == 'PATCH' and err.code in (404, 405):
+                continue
+            return False, err.code, response_error_detail(err.code, err.read())
+        except Exception as exc:
+            return False, None, safe_exception_text(exc)
+    return False, None, 'update request failed'
+
+
+def load_active_proxy_ids() -> list[int]:
+    if db_container:
+        import subprocess
+        command = [
+            'docker', 'exec', '-e', f'PGPASSWORD={os.getenv("SUB2TEST_DB_PASSWORD", "")}', db_container,
+            'psql', '-U', os.environ['SUB2TEST_DB_USER'], '-d', os.environ['SUB2TEST_DB_NAME'], '-F', '\t', '-Atqc',
+            "SELECT id FROM proxies WHERE deleted_at IS NULL AND status = 'active' ORDER BY id ASC",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8')
+        if result.returncode != 0:
+            print(f'proxy_assign_summary candidates={len(accounts)} assigned=0 skipped_existing=0 failed=0 reason=load_proxy_failed detail={shorten_detail(result.stderr)}')
+            sys.exit(1)
+        return [int(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+
+    import psycopg2
+    conn = psycopg2.connect(
+        host=os.environ['SUB2TEST_DB_HOST'],
+        port=os.environ['SUB2TEST_DB_PORT'],
+        user=os.environ['SUB2TEST_DB_USER'],
+        password=os.getenv('SUB2TEST_DB_PASSWORD', ''),
+        dbname=os.environ['SUB2TEST_DB_NAME'],
+        sslmode=os.getenv('SUB2TEST_DB_SSLMODE', 'disable'),
+    )
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id
+        FROM proxies
+        WHERE deleted_at IS NULL
+          AND status = 'active'
+        ORDER BY id ASC
+        """
+    )
+    proxy_ids = [proxy_id for (proxy_id,) in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return proxy_ids
+
+
+def select_proxy_id(active_proxy_ids: list[int]) -> int | None:
+    if not active_proxy_ids:
+        return None
+    if mode == 'random':
+        return random.choice(active_proxy_ids)
+    if proxy_index > len(active_proxy_ids):
+        return None
+    return active_proxy_ids[proxy_index - 1]
+
+proxy_ids = load_active_proxy_ids()
+selected_proxy_id = select_proxy_id(proxy_ids)
+candidate_count = len(accounts)
+skipped_existing = 0
+assigned_count = 0
+failed_count = 0
+
+if not proxy_ids:
+    print(f'proxy_assign_summary candidates={candidate_count} assigned=0 skipped_existing=0 failed=0 reason=no_available_proxy mode={mode}')
+    sys.exit(0)
+
+if selected_proxy_id is None:
+    print(f'proxy_assign_summary candidates={candidate_count} assigned=0 skipped_existing=0 failed=0 reason=proxy_index_out_of_range mode={mode} index={proxy_index} active_proxy_count={len(proxy_ids)}')
+    sys.exit(0)
+
+for row in accounts:
+    account_id = int(row.get('id'))
+    current_proxy_id = row.get('proxy_id')
+    if current_proxy_id not in (None, ''):
+        skipped_existing += 1
+        print(f'proxy_assign_skip account={account_id} reason=existing_proxy proxy_id={current_proxy_id}')
+        continue
+    success, status_code, detail = update_account_fields(account_id, {'proxy_id': selected_proxy_id})
+    if success:
+        assigned_count += 1
+        print(f'proxy_assign account={account_id} proxy={selected_proxy_id} mode={mode}')
+    else:
+        failed_count += 1
+        print(f'proxy_assign account={account_id} proxy={selected_proxy_id} mode={mode} status=failed http_status={status_code or "unknown"} detail={shorten_detail(detail)}')
+
+print(f'proxy_assign_summary candidates={candidate_count} assigned={assigned_count} skipped_existing={skipped_existing} failed={failed_count} mode={mode} selected_proxy={selected_proxy_id}')
+PY_RUN_PROXY_ASSIGN
 }
 
 run_duplicate_check() {
@@ -1689,6 +1971,27 @@ t() {
     en:manual_conflict_untested_waiting) echo "Untested automatic task is queued and waiting for the shared lock." ;;
     en:manual_conflict_duplicates_running) echo "Duplicate-account automatic task is currently running." ;;
     en:manual_conflict_duplicates_waiting) echo "Duplicate-account automatic task is queued and waiting for the shared lock." ;;
+    en:manual_conflict_proxy_assign_running) echo "Proxy-assignment automatic task is currently running." ;;
+    en:manual_conflict_proxy_assign_waiting) echo "Proxy-assignment automatic task is queued and waiting for the shared lock." ;;
+    en:menu_enable_proxy_assign) echo "Enable proxy-assignment task" ;;
+    en:menu_disable_proxy_assign) echo "Disable proxy-assignment task" ;;
+    en:proxy_assign_menu_title) echo "Proxy-assignment task menu" ;;
+    en:proxy_assign_menu_config) echo "Edit proxy-assignment config" ;;
+    en:proxy_assign_menu_enable) echo "Enable proxy-assignment task" ;;
+    en:proxy_assign_menu_disable) echo "Disable proxy-assignment task" ;;
+    en:proxy_assign_menu_run) echo "Run once (assign proxies to accounts without proxy)" ;;
+    en:proxy_assign_menu_show_log) echo "Show last proxy-assignment log" ;;
+    en:proxy_assign_config_title) echo "Current proxy-assignment task parameters:" ;;
+    en:proxy_assign_task) echo "Proxy assignment" ;;
+    en:proxy_assign_scope) echo " (assigns active proxies to accounts without proxy)" ;;
+    en:label_proxy_assign_enabled) echo "Enable proxy-assignment task" ;;
+    en:label_proxy_assign_every_minutes) echo "Run proxy-assignment task every N minutes (5-720)" ;;
+    en:label_proxy_assign_delay) echo "Proxy-assignment random delay seconds" ;;
+    en:label_proxy_assign_mode) echo "Proxy-assignment mode (index/random)" ;;
+    en:label_proxy_assign_index) echo "Proxy-assignment index (1-based for index mode)" ;;
+    en:last_proxy_assign_log_title) echo "Last proxy-assignment log:" ;;
+    en:menu_proxy_assign_task) echo "Proxy-assignment task menu" ;;
+    en:menu_run_proxy_assign) echo "Run proxy-assignment once" ;;
     en:manual_conflict_prompt) echo "Stop the running or queued automatic task(s) and continue with this manual run? [y/N]" ;;
     en:manual_conflict_cancelled) echo "Manual run cancelled." ;;
     en:manual_conflict_stopping) echo "Stopping automatic task(s)..." ;;
@@ -1824,6 +2127,27 @@ t() {
     zh:manual_conflict_untested_waiting) echo "未测自动任务正在排队等待共享锁。" ;;
     zh:manual_conflict_duplicates_running) echo "重复账号排查自动任务正在执行。" ;;
     zh:manual_conflict_duplicates_waiting) echo "重复账号排查自动任务正在排队等待共享锁。" ;;
+    zh:manual_conflict_proxy_assign_running) echo "代理分配自动任务正在执行。" ;;
+    zh:manual_conflict_proxy_assign_waiting) echo "代理分配自动任务正在排队等待共享锁。" ;;
+    zh:menu_enable_proxy_assign) echo "启用代理分配任务" ;;
+    zh:menu_disable_proxy_assign) echo "禁用代理分配任务" ;;
+    zh:proxy_assign_menu_title) echo "代理分配任务菜单" ;;
+    zh:proxy_assign_menu_config) echo "编辑代理分配任务配置" ;;
+    zh:proxy_assign_menu_enable) echo "启用代理分配任务" ;;
+    zh:proxy_assign_menu_disable) echo "禁用代理分配任务" ;;
+    zh:proxy_assign_menu_run) echo "立即执行一次（给无代理账号分配代理）" ;;
+    zh:proxy_assign_menu_show_log) echo "查看上次代理分配日志" ;;
+    zh:proxy_assign_config_title) echo "当前代理分配任务参数：" ;;
+    zh:proxy_assign_task) echo "代理分配" ;;
+    zh:proxy_assign_scope) echo "（给无代理账号分配 active 代理）" ;;
+    zh:label_proxy_assign_enabled) echo "是否启用代理分配任务" ;;
+    zh:label_proxy_assign_every_minutes) echo "代理分配任务每隔多少分钟执行一次（5-720）" ;;
+    zh:label_proxy_assign_delay) echo "代理分配任务随机延迟秒数" ;;
+    zh:label_proxy_assign_mode) echo "代理分配模式（index/random）" ;;
+    zh:label_proxy_assign_index) echo "代理分配序号（index 模式从 1 开始）" ;;
+    zh:last_proxy_assign_log_title) echo "上次代理分配日志：" ;;
+    zh:menu_proxy_assign_task) echo "代理分配任务菜单" ;;
+    zh:menu_run_proxy_assign) echo "立即执行代理分配一次" ;;
     zh:manual_conflict_prompt) echo "是否停止这些正在执行或排队的自动任务，并继续本次手动执行？[y/N]" ;;
     zh:manual_conflict_cancelled) echo "已取消本次手动执行。" ;;
     zh:manual_conflict_stopping) echo "正在停止自动任务..." ;;
@@ -1939,6 +2263,11 @@ show_config() {
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
   echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}    # 共享锁最多等待秒数，0 表示不等待"
+  echo "SUB2TEST_PROXY_ASSIGN_ENABLED=${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}    # 是否启用代理分配任务"
+  echo "SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES=${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}    # 代理分配任务每隔多少分钟执行一次"
+  echo "SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}    # 代理分配任务 systemd 随机延迟秒数"
+  echo "SUB2TEST_PROXY_ASSIGN_MODE=${SUB2TEST_PROXY_ASSIGN_MODE:-index}    # 代理分配模式：index/random"
+  echo "SUB2TEST_PROXY_ASSIGN_INDEX=${SUB2TEST_PROXY_ASSIGN_INDEX:-1}    # 代理分配模式为 index 时的序号"
   echo "SUB2TEST_DUPLICATES_ENABLED=${SUB2TEST_DUPLICATES_ENABLED:-false}    # 是否启用重复账号排查任务"
   echo "SUB2TEST_DUPLICATES_EVERY_MINUTES=${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}    # 重复账号排查每隔多少分钟执行一次"
   echo "SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}    # 重复账号排查 systemd 随机延迟秒数"
@@ -1973,6 +2302,11 @@ show_global_config() {
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}"
   echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}"
+  echo "SUB2TEST_PROXY_ASSIGN_ENABLED=${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}"
+  echo "SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES=${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}"
+  echo "SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}"
+  echo "SUB2TEST_PROXY_ASSIGN_MODE=${SUB2TEST_PROXY_ASSIGN_MODE:-index}"
+  echo "SUB2TEST_PROXY_ASSIGN_INDEX=${SUB2TEST_PROXY_ASSIGN_INDEX:-1}"
   echo "SUB2TEST_DUPLICATES_ENABLED=${SUB2TEST_DUPLICATES_ENABLED:-false}"
   echo "SUB2TEST_DUPLICATES_EVERY_MINUTES=${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}"
   echo "SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}"
@@ -1997,6 +2331,15 @@ show_untested_task_config() {
   echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}"
   echo "SUB2TEST_UNTESTED_EVERY_MINUTES=${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}"
   echo "SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}"
+}
+
+show_proxy_assign_task_config() {
+  echo "$(t proxy_assign_config_title)"
+  echo "SUB2TEST_PROXY_ASSIGN_ENABLED=${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}"
+  echo "SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES=${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}"
+  echo "SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}"
+  echo "SUB2TEST_PROXY_ASSIGN_MODE=${SUB2TEST_PROXY_ASSIGN_MODE:-index}"
+  echo "SUB2TEST_PROXY_ASSIGN_INDEX=${SUB2TEST_PROXY_ASSIGN_INDEX:-1}"
 }
 
 show_duplicates_task_config() {
@@ -2066,6 +2409,8 @@ untested_schedule_summary() {
   local every_minutes="$2"
   local randomized_delay="$3"
   local scope="$4"
+  local invalid_label_zh="未测任务分钟间隔配置无效"
+  local invalid_label_en="Invalid untested interval"
 
   if [ "$enabled" != "true" ]; then
     t not_enabled
@@ -2075,9 +2420,39 @@ untested_schedule_summary() {
   local validated_minutes
   if ! validated_minutes="$(systemd_minutes_calendar_for "$every_minutes" 2>/dev/null)"; then
     if [ "${SUB2TEST_LANGUAGE:-zh}" = "en" ]; then
-      printf "Invalid untested interval%s" "$scope"
+      printf "%s%s" "$invalid_label_en" "$scope"
     else
-      printf "未测任务分钟间隔配置无效%s" "$scope"
+      printf "%s%s" "$invalid_label_zh" "$scope"
+    fi
+    return 0
+  fi
+
+  if [ -n "$randomized_delay" ] && [ "$randomized_delay" != "0" ]; then
+    printf "$(t enabled_every_minutes_with_delay)" "$validated_minutes" "$scope" "$randomized_delay"
+  else
+    printf "$(t enabled_every_minutes)" "$validated_minutes" "$scope"
+  fi
+}
+
+periodic_minutes_schedule_summary() {
+  local enabled="$1"
+  local every_minutes="$2"
+  local randomized_delay="$3"
+  local scope="$4"
+  local invalid_label_zh="$5"
+  local invalid_label_en="$6"
+
+  if [ "$enabled" != "true" ]; then
+    t not_enabled
+    return 0
+  fi
+
+  local validated_minutes
+  if ! validated_minutes="$(systemd_minutes_calendar_for "$every_minutes" 2>/dev/null)"; then
+    if [ "${SUB2TEST_LANGUAGE:-zh}" = "en" ]; then
+      printf "%s%s" "$invalid_label_en" "$scope"
+    else
+      printf "%s%s" "$invalid_label_zh" "$scope"
     fi
     return 0
   fi
@@ -2155,6 +2530,9 @@ reload_timers_if_enabled() {
   if systemctl is-enabled sub2test-untested.timer >/dev/null 2>&1; then
     systemctl restart sub2test-untested.timer
   fi
+  if systemctl is-enabled sub2test-proxy-assign.timer >/dev/null 2>&1; then
+    systemctl restart sub2test-proxy-assign.timer
+  fi
   if systemctl is-enabled sub2test-duplicates.timer >/dev/null 2>&1; then
     systemctl restart sub2test-duplicates.timer
   fi
@@ -2165,10 +2543,12 @@ show_task_summaries() {
   echo "$(t config_intro)"
   echo "- $(t full_task)：$(schedule_summary "${SUB2TEST_ENABLED:-false}" "${SUB2TEST_DAILY_AT:-}" "${SUB2TEST_EVERY_HOURS:-}" "${SUB2TEST_SCHEDULE:-daily}" "false" "${SUB2TEST_RANDOMIZED_DELAY_SECONDS:-120}" "$(t full_scope)")"
   echo "- $(t untested_task)：$(untested_schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
-  echo "- $(t duplicates_task)：$(untested_schedule_summary "${SUB2TEST_DUPLICATES_ENABLED:-false}" "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t duplicates_scope)")"
+  echo "- $(t proxy_assign_task)：$(periodic_minutes_schedule_summary "${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}" "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}" "$(t proxy_assign_scope)" "代理分配任务分钟间隔配置无效" "Invalid proxy-assignment interval")"
+  echo "- $(t duplicates_task)：$(periodic_minutes_schedule_summary "${SUB2TEST_DUPLICATES_ENABLED:-false}" "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t duplicates_scope)" "重复账号排查分钟间隔配置无效" "Invalid duplicate-account interval")"
   echo "$(t runtime_overview_title)"
   show_service_runtime_summary sub2test.service "$(t full_task)"
   show_service_runtime_summary sub2test-untested.service "$(t untested_task)"
+  show_service_runtime_summary sub2test-proxy-assign.service "$(t proxy_assign_task)"
   show_service_runtime_summary sub2test-duplicates.service "$(t duplicates_task)"
 }
 
@@ -2194,6 +2574,8 @@ edit_global_config() {
   edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "$(t label_error_threshold)"
   edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}" "$(t label_state_file)"
   edit_value SUB2TEST_LOCK_WAIT_SECONDS "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" "$(t label_lock_wait_seconds)"
+  edit_value SUB2TEST_PROXY_ASSIGN_MODE "${SUB2TEST_PROXY_ASSIGN_MODE:-index}" "$(t label_proxy_assign_mode)"
+  edit_value SUB2TEST_PROXY_ASSIGN_INDEX "${SUB2TEST_PROXY_ASSIGN_INDEX:-1}" "$(t label_proxy_assign_index)"
   edit_value SUB2TEST_DUPLICATES_SKIP_INACTIVE "${SUB2TEST_DUPLICATES_SKIP_INACTIVE:-true}" "$(t label_duplicates_skip_inactive)"
   edit_value SUB2TEST_CONCURRENCY "${SUB2TEST_CONCURRENCY:-3}" "$(t label_concurrency)"
   edit_value SUB2TEST_TIMEOUT_SECONDS "${SUB2TEST_TIMEOUT_SECONDS:-30}" "$(t label_timeout)"
@@ -2202,6 +2584,22 @@ edit_global_config() {
   reload_timers_if_enabled
   echo
   show_global_config
+}
+
+edit_proxy_assign_task_config() {
+  . "$SUB2TEST_CONFIG_FILE"
+  echo
+  show_proxy_assign_task_config
+  echo
+  echo "$(t edit_intro)"
+  echo
+  edit_value SUB2TEST_PROXY_ASSIGN_ENABLED "${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}" "$(t label_proxy_assign_enabled)"
+  edit_value SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "$(t label_proxy_assign_every_minutes)"
+  edit_value SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}" "$(t label_proxy_assign_delay)"
+  edit_value SUB2TEST_PROXY_ASSIGN_MODE "${SUB2TEST_PROXY_ASSIGN_MODE:-index}" "$(t label_proxy_assign_mode)"
+  edit_value SUB2TEST_PROXY_ASSIGN_INDEX "${SUB2TEST_PROXY_ASSIGN_INDEX:-1}" "$(t label_proxy_assign_index)"
+  echo
+  show_proxy_assign_task_config
 }
 
 edit_full_task_config() {
@@ -2239,7 +2637,7 @@ duplicates_task_menu() {
     . "$SUB2TEST_CONFIG_FILE"
     echo
     echo "$(t duplicates_menu_title)"
-    echo "- $(t duplicates_task)：$(untested_schedule_summary "${SUB2TEST_DUPLICATES_ENABLED:-false}" "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t duplicates_scope)")"
+    echo "- $(t duplicates_task)：$(periodic_minutes_schedule_summary "${SUB2TEST_DUPLICATES_ENABLED:-false}" "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t duplicates_scope)" "重复账号排查分钟间隔配置无效" "Invalid duplicate-account interval")"
     echo
     echo "1) $(t duplicates_menu_config)"
     echo "2) $(t duplicates_menu_enable)"
@@ -2272,6 +2670,12 @@ edit_duplicates_task_config() {
   echo
   show_duplicates_task_config
   echo "- $(t duplicates_task)：$(untested_schedule_summary "${SUB2TEST_DUPLICATES_ENABLED:-false}" "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}" "$(t duplicates_scope)")"
+}
+
+show_last_proxy_assign_log() {
+  echo
+  echo "$(t last_proxy_assign_log_title)"
+  journalctl -u sub2test-proxy-assign.service -n 100 --no-pager || true
 }
 
 show_last_full_log() {
@@ -2440,6 +2844,13 @@ print_automatic_task_conflicts() {
     echo "$(t manual_conflict_untested_waiting)"
     has_conflict=0
   fi
+  if service_is_running sub2test-proxy-assign.service; then
+    echo "$(t manual_conflict_proxy_assign_running)"
+    has_conflict=0
+  elif service_is_waiting sub2test-proxy-assign.service; then
+    echo "$(t manual_conflict_proxy_assign_waiting)"
+    has_conflict=0
+  fi
   if service_is_running sub2test-duplicates.service; then
     echo "$(t manual_conflict_duplicates_running)"
     has_conflict=0
@@ -2455,6 +2866,9 @@ automatic_tasks_conflicting() {
     return 0
   fi
   if service_is_running sub2test-untested.service || service_is_waiting sub2test-untested.service; then
+    return 0
+  fi
+  if service_is_running sub2test-proxy-assign.service || service_is_waiting sub2test-proxy-assign.service; then
     return 0
   fi
   if service_is_running sub2test-duplicates.service || service_is_waiting sub2test-duplicates.service; then
@@ -2476,6 +2890,7 @@ stop_automatic_tasks_for_manual_run() {
   local attempt
   systemctl stop sub2test.service >/dev/null 2>&1 || true
   systemctl stop sub2test-untested.service >/dev/null 2>&1 || true
+  systemctl stop sub2test-proxy-assign.service >/dev/null 2>&1 || true
   systemctl stop sub2test-duplicates.service >/dev/null 2>&1 || true
   for attempt in 1 2 3 4 5; do
     if ! automatic_tasks_conflicting; then
@@ -2526,6 +2941,7 @@ enable_task() {
   render_timer
   render_untested_timer
   render_duplicates_timer
+  render_proxy_assign_timer
   systemctl daemon-reload
   systemctl enable --now sub2test.timer
   if [ "${SUB2TEST_UNTESTED_ENABLED:-false}" = "true" ]; then
@@ -2537,6 +2953,11 @@ enable_task() {
     systemctl enable --now sub2test-duplicates.timer
   else
     systemctl disable --now sub2test-duplicates.timer >/dev/null 2>&1 || true
+  fi
+  if [ "${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}" = "true" ]; then
+    systemctl enable --now sub2test-proxy-assign.timer
+  else
+    systemctl disable --now sub2test-proxy-assign.timer >/dev/null 2>&1 || true
   fi
   echo "sub2test timer enabled"
 }
@@ -2559,6 +2980,23 @@ enable_duplicates_task() {
   systemctl daemon-reload
   systemctl enable --now sub2test-duplicates.timer
   echo "sub2test duplicates timer enabled"
+}
+
+enable_proxy_assign_task() {
+  save_config_value SUB2TEST_PROXY_ASSIGN_ENABLED true
+  . "$SUB2TEST_CONFIG_FILE"
+  preflight_runtime
+  render_proxy_assign_timer
+  systemctl daemon-reload
+  systemctl enable --now sub2test-proxy-assign.timer
+  echo "sub2test proxy-assign timer enabled"
+}
+
+disable_proxy_assign_task() {
+  save_config_value SUB2TEST_PROXY_ASSIGN_ENABLED false
+  . "$SUB2TEST_CONFIG_FILE"
+  systemctl disable --now sub2test-proxy-assign.timer || true
+  echo "sub2test proxy-assign timer disabled"
 }
 
 disable_task() {
@@ -2584,6 +3022,32 @@ disable_duplicates_task() {
 
 edit_config() {
   edit_global_config
+}
+
+proxy_assign_task_menu() {
+  while true; do
+    . "$SUB2TEST_CONFIG_FILE"
+    echo
+    echo "$(t proxy_assign_menu_title)"
+    echo "- $(t proxy_assign_task)：$(periodic_minutes_schedule_summary "${SUB2TEST_PROXY_ASSIGN_ENABLED:-false}" "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}" "$(t proxy_assign_scope)" "代理分配任务分钟间隔配置无效" "Invalid proxy-assignment interval")"
+    echo
+    echo "1) $(t proxy_assign_menu_config)"
+    echo "2) $(t proxy_assign_menu_enable)"
+    echo "3) $(t proxy_assign_menu_disable)"
+    echo "4) $(t proxy_assign_menu_run)"
+    echo "5) $(t proxy_assign_menu_show_log)"
+    echo "0) $(t menu_back)"
+    read -r -p "> " choice
+    case "$choice" in
+      1) edit_proxy_assign_task_config ;;
+      2) enable_proxy_assign_task ;;
+      3) disable_proxy_assign_task ;;
+      4) run_proxy_assign_once ;;
+      5) show_last_proxy_assign_log ;;
+      0) return 0 ;;
+      *) echo "$(t invalid_option)" ;;
+    esac
+  done
 }
 
 full_task_menu() {
@@ -2661,7 +3125,8 @@ uninstall_self() {
   systemctl disable --now sub2test.timer || true
   systemctl disable --now sub2test-untested.timer || true
   systemctl disable --now sub2test-duplicates.timer || true
-  rm -f /etc/systemd/system/sub2test.service /etc/systemd/system/sub2test.timer /etc/systemd/system/sub2test-untested.service /etc/systemd/system/sub2test-untested.timer /etc/systemd/system/sub2test-duplicates.service /etc/systemd/system/sub2test-duplicates.timer "__LINK_FILE__"
+  systemctl disable --now sub2test-proxy-assign.timer || true
+  rm -f /etc/systemd/system/sub2test.service /etc/systemd/system/sub2test.timer /etc/systemd/system/sub2test-untested.service /etc/systemd/system/sub2test-untested.timer /etc/systemd/system/sub2test-duplicates.service /etc/systemd/system/sub2test-duplicates.timer /etc/systemd/system/sub2test-proxy-assign.service /etc/systemd/system/sub2test-proxy-assign.timer "__LINK_FILE__"
   rm -rf "__INSTALL_ROOT__"
   echo "sub2test removed"
 }
@@ -2682,6 +3147,14 @@ run_once() {
   export SUB2TEST_CONCURRENCY SUB2TEST_TIMEOUT_SECONDS
   export SUB2TEST_SLEEP_MIN_SECONDS SUB2TEST_SLEEP_MAX_SECONDS
   run_health_check "$mode"
+}
+
+run_proxy_assign_once() {
+  echo "$(t manual_lock_starting)"
+  if ! /usr/bin/flock -w "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" /opt/sub2test/run.lock "$SCRIPT_PATH" run-proxy-assign; then
+    echo "$(t manual_lock_failed)"
+    return 1
+  fi
 }
 
 run_duplicates_once() {
@@ -2705,10 +3178,11 @@ menu() {
     echo "2) $(t menu_full_task)"
     echo "3) $(t menu_untested_task)"
     echo "4) $(t menu_duplicates_task)"
-    echo "5) $(t menu_manual_run)"
-    echo "6) $(t menu_show_config)"
-    echo "7) $(t menu_switch_language)"
-    echo "8) $(t menu_uninstall)"
+    echo "5) $(t menu_proxy_assign_task)"
+    echo "6) $(t menu_manual_run)"
+    echo "7) $(t menu_show_config)"
+    echo "8) $(t menu_switch_language)"
+    echo "9) $(t menu_uninstall)"
     echo "0) $(t menu_exit)"
     read -r -p "> " choice
     case "$choice" in
@@ -2716,10 +3190,11 @@ menu() {
       2) full_task_menu ;;
       3) untested_task_menu ;;
       4) duplicates_task_menu ;;
-      5) manual_run_menu ;;
-      6) show_config ;;
-      7) switch_language ;;
-      8) uninstall_self; exit 0 ;;
+      5) proxy_assign_task_menu ;;
+      6) manual_run_menu ;;
+      7) show_config ;;
+      8) switch_language ;;
+      9) uninstall_self; exit 0 ;;
       0) exit 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
@@ -2729,6 +3204,7 @@ menu() {
 case "${1:-menu}" in
   run-once) run_once "${2:-all}" ;;
   run-duplicates) run_duplicates_once ;;
+  run-proxy-assign) run_proxy_assign_once ;;
   show-config) show_config ;;
   preflight) preflight_runtime ;;
   enable) enable_task ;;
@@ -2737,8 +3213,11 @@ case "${1:-menu}" in
   disable-untested) disable_untested_task ;;
   enable-duplicates) enable_duplicates_task ;;
   disable-duplicates) disable_duplicates_task ;;
+  enable-proxy-assign) enable_proxy_assign_task ;;
+  disable-proxy-assign) disable_proxy_assign_task ;;
   menu) menu ;;
-  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|run-duplicates|show-config|preflight|enable|disable|enable-untested|disable-untested|enable-duplicates|disable-duplicates]" >&2; exit 1 ;;
+  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|run-duplicates|run-proxy-assign|show-config|preflight|enable|disable|enable-untested|disable-untested|enable-duplicates|disable-duplicates|enable-proxy-assign|disable-proxy-assign]" >&2; exit 1 ;;
+esac
 esac
 '''
 content = content.replace('__CONFIG_FILE__', config_file)
@@ -2780,6 +3259,16 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/run.lock $LINK_FILE run-duplicates
+EOF
+
+cat > /etc/systemd/system/sub2test-proxy-assign.service <<EOF
+[Unit]
+Description=Sub2API external sub2test proxy-assignment runner
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=$LINK_FILE run-proxy-assign
 EOF
 
 cat > "$SYSTEMD_TIMER" <<'EOF'
@@ -2824,6 +3313,11 @@ Unit=sub2test-duplicates.service
 WantedBy=timers.target
 EOF
 
+render_timer
+render_untested_timer
+render_duplicates_timer
+render_proxy_assign_timer
+
 ln -sf "$BIN_FILE" "$LINK_FILE"
 systemctl daemon-reload
 /usr/local/bin/sub2test show-config >/dev/null 2>&1 || true
@@ -2834,6 +3328,9 @@ if grep -q '^SUB2TEST_UNTESTED_ENABLED=true$' "$CONFIG_FILE"; then
 fi
 if grep -q '^SUB2TEST_DUPLICATES_ENABLED=true$' "$CONFIG_FILE"; then
   /usr/local/bin/sub2test enable-duplicates >/dev/null 2>&1 || true
+fi
+if grep -q '^SUB2TEST_PROXY_ASSIGN_ENABLED=true$' "$CONFIG_FILE"; then
+  /usr/local/bin/sub2test enable-proxy-assign >/dev/null 2>&1 || true
 fi
 
 echo "sub2test installed"
