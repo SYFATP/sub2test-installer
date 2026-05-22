@@ -3580,7 +3580,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/proxy-assign.lock $LINK_FILE run-proxy-assign
+ExecStart=/usr/bin/flock -w ${SUB2TEST_LOCK_WAIT_SECONDS:-3600} /opt/sub2test/proxy-assign.lock $LINK_FILE run-proxy-assign-now
 EOF
 
 cat > "$SYSTEMD_TIMER" <<'EOF'
