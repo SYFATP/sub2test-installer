@@ -3139,11 +3139,12 @@ run_once() {
 }
 
 run_proxy_assign_once() {
-  echo "$(t manual_lock_starting)"
-  if ! /usr/bin/flock -w "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" /opt/sub2test/run.lock "$SCRIPT_PATH" run-proxy-assign; then
-    echo "$(t manual_lock_failed)"
-    return 1
-  fi
+  . "$SUB2TEST_CONFIG_FILE"
+  export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
+  export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
+  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_TIMEOUT_SECONDS
+  export SUB2TEST_PROXY_ASSIGN_MODE SUB2TEST_PROXY_ASSIGN_INDEX
+  run_proxy_assign
 }
 
 run_duplicates_once() {
