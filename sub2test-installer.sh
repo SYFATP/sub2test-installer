@@ -2848,7 +2848,7 @@ last_service_summary_time() {
 
 last_service_main_summary_line() {
   local service="$1"
-  last_service_summary_entries "$service" | grep 'summary success=' | tail -n 1 || true
+  last_service_summary_entries "$service" | grep -E 'summary success=|proxy_assign_summary|duplicate_summary' | tail -n 1 || true
 }
 
 last_service_summary_text() {
@@ -2861,11 +2861,16 @@ last_service_summary_text() {
     return 1
   fi
 
+  summary_line="$(printf '%s\n' "$summary_line" | sed 's/^.*\(summary .*\)$/\1/')"
   timestamp="$(printf '%s\n' "$summary_line" | cut -d' ' -f1-2)"
-  counts="$(last_service_summary_entries "$service" | grep -F "$timestamp" | grep 'summary status_' | sed 's/^.*summary / /' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
-  summary_line="$(printf '%s\n' "$summary_line" | sed 's/^.*summary /summary /')"
-  if [ -n "$counts" ]; then
-    printf '%s %s\n' "$summary_line" "$counts"
+
+  if printf '%s\n' "$summary_line" | grep -q '^summary success='; then
+    counts="$(last_service_summary_entries "$service" | grep -F "$timestamp" | grep 'summary status_' | sed 's/^.*summary / /' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
+    if [ -n "$counts" ]; then
+      printf '%s %s\n' "$summary_line" "$counts"
+    else
+      printf '%s\n' "$summary_line"
+    fi
   else
     printf '%s\n' "$summary_line"
   fi
