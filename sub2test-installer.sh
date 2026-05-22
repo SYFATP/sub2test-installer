@@ -2838,12 +2838,12 @@ last_service_summary_entries() {
 
 last_service_summary_time() {
   local service="$1"
-  local main_line
-  main_line="$(last_service_main_summary_line "$service")"
-  if [ -z "$main_line" ]; then
+  local summary_line
+  summary_line="$(last_service_main_summary_line "$service")"
+  if [ -z "$summary_line" ]; then
     return 1
   fi
-  printf '%s\n' "$main_line" | cut -d' ' -f1-2
+  printf '%s\n' "$summary_line" | cut -d' ' -f1-2
 }
 
 last_service_main_summary_line() {
@@ -2853,21 +2853,21 @@ last_service_main_summary_line() {
 
 last_service_summary_text() {
   local service="$1"
-  local main_line
+  local summary_line
   local timestamp
   local counts
-  main_line="$(last_service_main_summary_line "$service")"
-  if [ -z "$main_line" ]; then
+  summary_line="$(last_service_main_summary_line "$service")"
+  if [ -z "$summary_line" ]; then
     return 1
   fi
 
-  timestamp="$(printf '%s\n' "$main_line" | cut -d' ' -f1-2)"
+  timestamp="$(printf '%s\n' "$summary_line" | cut -d' ' -f1-2)"
   counts="$(last_service_summary_entries "$service" | grep -F "$timestamp" | grep 'summary status_' | sed 's/^.*summary / /' | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//')"
-  main_line="$(printf '%s\n' "$main_line" | sed 's/^.*summary /summary /')"
+  summary_line="$(printf '%s\n' "$summary_line" | sed 's/^.*summary /summary /')"
   if [ -n "$counts" ]; then
-    printf '%s %s\n' "$main_line" "$counts"
+    printf '%s %s\n' "$summary_line" "$counts"
   else
-    printf '%s\n' "$main_line"
+    printf '%s\n' "$summary_line"
   fi
 }
 
