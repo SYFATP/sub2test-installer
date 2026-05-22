@@ -2851,6 +2851,19 @@ last_service_main_summary_line() {
   last_service_summary_entries "$service" | grep -E 'summary success=|proxy_assign_summary|duplicate_summary' | tail -n 1 || true
 }
 
+extract_summary_payload() {
+  local raw_line="$1"
+  python3 - "$raw_line" <<'PY_EXTRACT_SUMMARY'
+import re
+import sys
+
+line = sys.argv[1]
+match = re.search(r'(summary success=.*|proxy_assign_summary .*|duplicate_summary .*)', line)
+if match:
+    print(match.group(1))
+PY_EXTRACT_SUMMARY
+}
+
 last_service_summary_text() {
   local service="$1"
   local raw_line
@@ -2863,9 +2876,7 @@ last_service_summary_text() {
   fi
 
   timestamp="$(printf '%s\n' "$raw_line" | cut -d' ' -f1-2)"
-  summary_line="$(printf '%s\n' "$raw_line" | sed -n 's/^.*\(summary .*\)$/\1/p')"
-  [ -n "$summary_line" ] || summary_line="$(printf '%s\n' "$raw_line" | sed -n 's/^.*\(proxy_assign_summary .*\)$/\1/p')"
-  [ -n "$summary_line" ] || summary_line="$(printf '%s\n' "$raw_line" | sed -n 's/^.*\(duplicate_summary .*\)$/\1/p')"
+  summary_line="$(extract_summary_payload "$raw_line")"
   [ -n "$summary_line" ] || return 1
 
   if printf '%s\n' "$summary_line" | grep -q '^summary success='; then
