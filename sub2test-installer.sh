@@ -2066,22 +2066,16 @@ for batch_start in range(0, len(rows), batch_size):
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
             message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} streak={item['streak_count']} detail={item['detail']}"
-        if item['mark_inactive_error_attempted']:
-            if item['source_status'] == 'inactive':
+            if item['mark_inactive_error_attempted']:
                 if item['mark_inactive_error_success']:
                     message += ' mark_inactive_error=success'
                 else:
                     message += f" mark_inactive_error=failed mark_inactive_error_detail={item['mark_inactive_error_detail']}"
-            else:
-                if item['mark_inactive_error_success']:
-                    message += ' mark_inactive_error=success'
+            if item['mark_error_attempted'] and item['source_status'] != 'inactive':
+                if item['mark_error_success']:
+                    message += ' mark_error=success'
                 else:
-                    message += f" mark_inactive_error=failed mark_inactive_error_detail={item['mark_inactive_error_detail']}"
-        if item['mark_error_attempted'] and item['source_status'] != 'inactive':
-            if item['mark_error_success']:
-                message += ' mark_error=success'
-            else:
-                message += f" mark_error=failed mark_error_detail={item['mark_error_detail']}"
+                    message += f" mark_error=failed mark_error_detail={item['mark_error_detail']}"
             if item['mark_token_expired_attempted']:
                 if item['mark_token_expired_success']:
                     message += ' mark_token_expired=success'
