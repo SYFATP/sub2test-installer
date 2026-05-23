@@ -1814,7 +1814,7 @@ def run_account_test(row):
         mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id))
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
-    elif native_status == 'error':
+    elif source_status != 'inactive' and native_status == 'error':
         mark_error_attempted = True
         mark_error_success, mark_error_status, mark_error_detail = mark_account_error(int(account_id))
         if not mark_error_success:
