@@ -1982,6 +1982,21 @@ def run_account_test(row):
         if not disable_success:
             disable_detail = shorten_detail(disable_detail or (f'HTTP {disable_status}' if disable_status else 'disable request failed'))
 
+    if source_status == 'inactive' and native_status != 'success' and native_status != 'token_expired':
+        mark_error_attempted = False
+        mark_error_success = False
+        mark_error_status = None
+        mark_error_detail = ''
+        disable_attempted = False
+        disable_success = False
+        disable_status = None
+        disable_detail = ''
+        if not keep_inactive_attempted:
+            keep_inactive_attempted = True
+            keep_inactive_success, keep_inactive_status, keep_inactive_detail = disable_account(int(account_id))
+            if not keep_inactive_success:
+                keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
+
     return {
         'account_id': account_id,
         'name': name,
