@@ -1768,10 +1768,12 @@ def disable_account(account_id: int):
 
 
 def enable_account(account_id: int):
-    return update_account_fields(account_id, {
+    update_success, update_status, update_detail = update_account_fields(account_id, {
         'status': 'active',
-        'schedulable': True,
     })
+    if not update_success:
+        return False, update_status, update_detail
+    return update_account_schedulable(account_id, True)
 
 
 state = load_state(state_file)
