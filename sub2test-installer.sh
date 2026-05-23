@@ -1668,7 +1668,7 @@ def classify_error_text(http_status: int | None, text: str) -> str:
         return 'token_expired'
     if 'token_invalidated' in raw:
         return 'error'
-    if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'token invalid', 'login again', 'sign in again', 'authentication token', 'no access token available')):
+    if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalid token', 'token invalid', 'login again', 'sign in again', 'authentication token', 'no access token available')):
         return 'error'
     if raw:
         return 'unknown'
