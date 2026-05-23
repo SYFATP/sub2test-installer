@@ -2099,7 +2099,7 @@ for batch_start in range(0, len(rows), batch_size):
         status_counts[item['native_status']] += 1
         processed_account_ids.add(item['account_id'])
         account_state = get_account_state(state, item['account_id'])
-        if inactive_source and item['display_status'] == 'inactive':
+        if (item['source_status'] or '').strip().lower() == 'inactive' and item['display_status'] == 'inactive':
             apply_account_state(account_state, 'inactive', item['streak_count'], item['disable_success'], item['enable_success'])
         else:
             apply_account_state(account_state, item['native_status'], item['streak_count'], item['disable_success'], item['enable_success'])
