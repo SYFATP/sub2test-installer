@@ -2820,9 +2820,11 @@ edit_untested_task_config() {
 }
 
 fetch_active_groups() {
+  . "$SUB2TEST_CONFIG_FILE"
   local groups_failed_msg="$(t groups_list_failed)"
   local groups_empty_msg="$(t groups_list_empty)"
   local groups_title_msg="$(t groups_list_title)"
+  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_TIMEOUT_SECONDS
   export SUB2TEST_GROUPS_FAILED_MSG="$groups_failed_msg" SUB2TEST_GROUPS_EMPTY_MSG="$groups_empty_msg" SUB2TEST_GROUPS_TITLE_MSG="$groups_title_msg"
   python3 - <<'PY_FETCH_ACTIVE_GROUPS'
 import json
