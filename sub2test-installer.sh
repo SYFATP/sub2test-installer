@@ -785,6 +785,9 @@ build_account_where_clause() {
     disabled)
       printf "%s" "status = 'inactive'"
       ;;
+    temp_unschedulable)
+      printf "%s" "status = 'temp_unschedulable'"
+      ;;
     untested)
       printf "%s" "(status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
       ;;
@@ -796,7 +799,7 @@ build_account_where_clause() {
 
 build_account_order_clause() {
   case "${1:-all}" in
-    error|disabled|untested)
+    error|disabled|temp_unschedulable|untested)
       printf "%s" "priority ASC, id ASC"
       ;;
     *)
@@ -1340,6 +1343,9 @@ if mode == 'error':
 elif mode == 'disabled':
     where_clause = "status = 'inactive'"
     order_clause = "priority ASC, id ASC"
+elif mode == 'temp_unschedulable':
+    where_clause = "status = 'temp_unschedulable'"
+    order_clause = "priority ASC, id ASC"
 elif mode == 'untested':
     where_clause = "(status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
     order_clause = "priority ASC, id ASC"
@@ -1590,6 +1596,10 @@ def mark_account_error(account_id: int):
     return update_account_status(account_id, 'error')
 
 
+def mark_account_token_expired(account_id: int):
+    return update_account_status(account_id, 'temp_unschedulable')
+
+
 def disable_account(account_id: int):
     return update_account_status(account_id, 'inactive')
 
@@ -1651,6 +1661,8 @@ def classify_error_text(http_status: int | None, text: str) -> str:
     raw = shorten_detail(text).lower()
     if http_status == 429 or any(keyword in raw for keyword in ('429', 'rate_limit', 'rate limit', 'too many request')):
         return 'rate_limited'
+    if 'token_expired' in raw or 'token expired' in raw:
+        return 'token_expired'
     if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'token invalid', 'login again', 'sign in again', 'authentication token', 'no access token available')):
         return 'error'
     if raw:
@@ -1765,6 +1777,10 @@ def run_account_test(row):
     mark_error_success = False
     mark_error_detail = ''
     mark_error_status = None
+    mark_token_expired_attempted = False
+    mark_token_expired_success = False
+    mark_token_expired_detail = ''
+    mark_token_expired_status = None
     enable_attempted = False
     enable_success = False
     enable_detail = ''
@@ -1784,6 +1800,11 @@ def run_account_test(row):
         keep_inactive_success, keep_inactive_status, keep_inactive_detail = disable_account(int(account_id))
         if not keep_inactive_success:
             keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
+    elif native_status == 'token_expired':
+        mark_token_expired_attempted = True
+        mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id))
+        if not mark_token_expired_success:
+            mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
     elif source_status == 'active' and native_status == 'error':
         mark_error_attempted = True
         mark_error_success, mark_error_status, mark_error_detail = mark_account_error(int(account_id))
@@ -1814,6 +1835,10 @@ def run_account_test(row):
         'mark_error_success': mark_error_success,
         'mark_error_status': mark_error_status,
         'mark_error_detail': mark_error_detail,
+        'mark_token_expired_attempted': mark_token_expired_attempted,
+        'mark_token_expired_success': mark_token_expired_success,
+        'mark_token_expired_status': mark_token_expired_status,
+        'mark_token_expired_detail': mark_token_expired_detail,
         'enable_attempted': enable_attempted,
         'enable_success': enable_success,
         'enable_status': enable_status,
@@ -1845,6 +1870,11 @@ for batch_start in range(0, len(rows), batch_size):
                     message += ' mark_error=success'
                 else:
                     message += f" mark_error=failed mark_error_detail={item['mark_error_detail']}"
+            if item['mark_token_expired_attempted']:
+                if item['mark_token_expired_success']:
+                    message += ' mark_token_expired=success'
+                else:
+                    message += f" mark_token_expired=failed mark_token_expired_detail={item['mark_token_expired_detail']}"
             if item['enable_attempted']:
                 if item['enable_success']:
                     message += ' enable=success'
