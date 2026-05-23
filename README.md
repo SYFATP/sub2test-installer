@@ -4,7 +4,6 @@ Current release: `0.1.6`
 
 - [中文](#中文)
 - [English](#english)
-- [Release notes](#release-notes)
 
 ---
 
@@ -42,10 +41,6 @@ sudo sub2test menu
 - 支持 systemd timer 定时执行
 - 支持手动执行与日志查看
 
-### 完整配置说明
-
-配置文件路径：`/etc/sub2api/sub2test.env`
-
 ### 查看和排障
 
 ```bash
@@ -60,197 +55,53 @@ sudo sub2test run-proxy-assign-now
 - `SUB2TEST_ADMIN_API_KEY` 只在 `show-config` 中脱敏显示
 - `OnCalendar` 使用服务器本地时区
 
-### Release notes
+## English
 
-#### v0.1.6
+Current `sub2test-installer.sh` release: `0.1.6`.
 
-**中文**
+`sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
 
-- 新增独立的代理分配任务，支持自动定时和手动执行
-- 代理分配支持 `index / random` 两种模式，并且只处理 `proxy_id IS NULL` 的账号
-- 修复代理分配运行时生成的 heredoc 转义问题
-- 修复运行概览对代理分配、重复账号摘要的显示
-- 修复被系统停止的任务状态展示，避免误显示为执行失败
-
-升级命令：
+### Quick start in 30 seconds
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
 chmod +x /tmp/sub2test-installer.sh
 sudo bash /tmp/sub2test-installer.sh --force
-sudo sub2test preflight
-sudo systemctl daemon-reload
-sudo systemctl restart sub2test.timer
-sudo systemctl restart sub2test-untested.timer
-sudo systemctl restart sub2test-proxy-assign.timer
-sudo systemctl restart sub2test-duplicates.timer
+sudo sub2test show-config
 ```
 
-注意：
-
-- 重启 `sub2test.service` 或 `sub2test-untested.service` 会立即执行一次任务
-- 如果只想刷新自动调度，不想立刻执行，请只重启对应的 `.timer`
-- 代理分配结果可用 `sudo /usr/local/bin/sub2test run-proxy-assign-now` 查看
-
-**English**
-
-- Added a standalone proxy-assignment task with both scheduled and manual execution paths
-- Proxy assignment now supports `index / random` modes and only processes accounts with `proxy_id IS NULL`
-- Fixed heredoc escaping in the generated proxy-assignment runtime script
-- Fixed runtime overview rendering for proxy-assignment and duplicate-account summaries
-- Fixed status labeling for system-stopped tasks so they are no longer shown as failures
-
-Upgrade command:
+### Common commands
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
-chmod +x /tmp/sub2test-installer.sh
-sudo bash /tmp/sub2test-installer.sh --force
-sudo sub2test preflight
-sudo systemctl daemon-reload
-sudo systemctl restart sub2test.timer
-sudo systemctl restart sub2test-untested.timer
-sudo systemctl restart sub2test-proxy-assign.timer
-sudo systemctl restart sub2test-duplicates.timer
+sudo sub2test show-config
+sudo sub2test run-once
+sudo sub2test run-proxy-assign-now
+sudo sub2test enable
+sudo sub2test disable
+sudo sub2test menu
 ```
 
-Notes:
+### Features
 
-- Restarting `sub2test.service` or `sub2test-untested.service` will execute a task immediately
-- If you only want to refresh scheduling without triggering a run, restart only the corresponding `.timer`
-- Use `sudo /usr/local/bin/sub2test run-proxy-assign-now` to inspect proxy-assignment output
+- Auto-detect database settings
+- Account health checks and automatic disable on consecutive errors
+- Separate untested / duplicate / proxy-assignment tasks
+- Systemd timer scheduling
+- Manual execution and log viewing
 
-#### v0.1.4
-
-**中文**
-
-- 修复 installer 本体在生成 service 时误调用运行时 helper，避免安装阶段出现 `systemd_lock_wait_seconds: command not found`
-- 新增 `SUB2TEST_LOCK_WAIT_SECONDS` 配置项，让全量任务与未测任务的共享锁等待秒数可配置
-- 给关键数值配置增加统一前置校验，并新增 `sub2test preflight`，让非法参数在安装、启用或重载前更早暴露
-- 强化运行时数值解析错误提示，避免配置非法时只看到裸 `ValueError`
-
-升级命令：
+### Troubleshooting
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
-chmod +x /tmp/sub2test-installer.sh
-sudo bash /tmp/sub2test-installer.sh --force
-sudo sub2test preflight
-sudo systemctl daemon-reload
-sudo systemctl restart sub2test.timer
-sudo systemctl restart sub2test-untested.timer
+systemctl status sub2test.timer --no-pager
+journalctl -u sub2test.service -n 100 --no-pager
+sudo sub2test run-proxy-assign-now
 ```
 
-注意：
+### Notes
 
-- 重启 `sub2test.service` 或 `sub2test-untested.service` 会立即执行一次任务
-- 如果只想刷新自动调度，不想立刻执行，请只重启对应的 `.timer`
-
-**English**
-
-- Fixed the installer shell mistakenly calling a runtime-only helper while rendering systemd services, so installation no longer fails with `systemd_lock_wait_seconds: command not found`
-- Added `SUB2TEST_LOCK_WAIT_SECONDS` so the shared lock wait time is configurable for both full and untested tasks
-- Added centralized preflight validation for critical numeric settings plus a new `sub2test preflight` command, so invalid values fail earlier during install, enable, or reload
-- Improved runtime numeric parsing errors so invalid config no longer surfaces only as a bare `ValueError`
-
-Upgrade command:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
-chmod +x /tmp/sub2test-installer.sh
-sudo bash /tmp/sub2test-installer.sh --force
-sudo sub2test preflight
-sudo systemctl daemon-reload
-sudo systemctl restart sub2test.timer
-sudo systemctl restart sub2test-untested.timer
-```
-
-Notes:
-
-- Restarting `sub2test.service` or `sub2test-untested.service` will execute a task immediately
-- If you only want to refresh scheduling without triggering a run, restart only the corresponding `.timer`
-
-#### v0.1.3
-
-**中文**
-
-- 修复生成出来的 `sub2test` 运行脚本缺少版本号和项目地址变量的问题，避免 `show-config` 在 `set -u` 下报 `unbound variable`
-- 全量任务调度模式改成子菜单选择，并补齐中英文翻译
-- 选择全量任务调度模式后，只继续显示对应的下一级配置项
-- 清理全量任务菜单里的手动执行入口，统一收口到“手动执行菜单”
-
-升级命令：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
-chmod +x /tmp/sub2test-installer.sh
-sudo bash /tmp/sub2test-installer.sh --force
-sudo systemctl daemon-reload
-sudo systemctl restart sub2test.timer
-sudo systemctl restart sub2test-untested.timer
-```
-
-注意：
-
-- 重启 `sub2test.service` 或 `sub2test-untested.service` 会立即执行一次任务
-- 如果只想刷新自动调度，不想立刻执行，请只重启对应的 `.timer`
-
-**English**
-
-- Fixed missing version and project URL variables in the generated `sub2test` runtime script so `show-config` no longer fails under `set -u`
-- Changed full-task schedule mode selection to a translated submenu
-- After choosing a full-task schedule mode, only the matching follow-up setting is prompted
-- Removed manual execution entries from the full-task menu and kept them only in the shared manual-run menu
-
-Upgrade command:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
-chmod +x /tmp/sub2test-installer.sh
-sudo bash /tmp/sub2test-installer.sh --force
-sudo systemctl daemon-reload
-sudo systemctl restart sub2test.timer
-sudo systemctl restart sub2test-untested.timer
-```
-
-Notes:
-
-- Restarting `sub2test.service` or `sub2test-untested.service` will execute a task immediately
-- If you only want to refresh scheduling without triggering a run, restart only the corresponding `.timer`
-
-#### v0.1.2
-
-**中文**
-
-- 新增主菜单版本号与项目地址显示，方便直接确认当前安装来源
-- `show-config` 现在会显示脚本版本和项目地址
-- 菜单结构重构为全局参数、全量任务、未测任务、手动执行四个独立入口
-- 全量任务调度配置移入独立子菜单，未测任务配置与手动执行入口分离
-- 未测任务自动调度统一为单一的分钟间隔配置 `SUB2TEST_UNTESTED_EVERY_MINUTES`（5-720）
-
-升级命令：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SYFATP/sub2test-installer/master/sub2test-installer.sh -o /tmp/sub2test-installer.sh
-chmod +x /tmp/sub2test-installer.sh
-sudo bash /tmp/sub2test-installer.sh --force
-sudo systemctl daemon-reload
-sudo systemctl restart sub2test.timer
-sudo systemctl restart sub2test-untested.timer
-```
-
-注意：
-
-- 重启 `sub2test.service` 或 `sub2test-untested.service` 会立即执行一次任务
-- 如果只想刷新自动调度，不想立刻执行，请只重启对应的 `.timer`
-
-**English**
-
-- Added version and project URL to the main menu so the installed source is visible at a glance
-- `show-config` now prints the script version and project URL
-- Restructured the menu into separate global, full-task, untested-task, and manual-run entry points
-- Moved full-task scheduling into its own submenu and separated untested-task config from manual execution
-- Unified untested automatic scheduling into a single `SUB2TEST_UNTESTED_EVERY_MINUTES` setting (5-720)
+- Removing `/opt/sub2test` clears local state
+- `SUB2TEST_ADMIN_API_KEY` is masked in `show-config`
+- `OnCalendar` uses the server's local timezone
 
 Upgrade command:
 
@@ -322,7 +173,7 @@ Notes:
 
 ## English
 
-Current `sub2test-installer.sh` release: `0.1.4`.
+Current `sub2test-installer.sh` release: `0.1.6`.
 
 `sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
 
@@ -335,38 +186,12 @@ sudo bash /tmp/sub2test-installer.sh --force
 sudo sub2test show-config
 ```
 
-After installation, you get:
-
-- Config file: `/etc/sub2api/sub2test.env`
-- State file: `/opt/sub2test/state.json`
-- Command entry: `/usr/local/bin/sub2test`
-- Timer: `/etc/systemd/system/sub2test.timer`
-
-### Common scheduling examples
-
-#### Run every day at 00:00
-
-```bash
-sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=00:00/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
-sudo sub2test enable
-```
-
-#### Run every 6 hours
-
-```bash
-sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=6/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
-sudo sub2test enable
-```
-
 ### Common commands
 
 ```bash
 sudo sub2test show-config
 sudo sub2test run-once
+sudo sub2test run-proxy-assign-now
 sudo sub2test enable
 sudo sub2test disable
 sudo sub2test menu
@@ -374,28 +199,25 @@ sudo sub2test menu
 
 ### Features
 
-- Auto-detect database settings from `docker-compose.yml` or `config.yaml`
-- Call `/admin/accounts/{id}/test` for account health checks
-- Persist consecutive `error` counts in a local state file
-- Disable accounts through `/admin/accounts/{id}` after reaching the threshold
-- Support fixed daily execution time
-- Support execution every N hours
-- Keep backward compatibility with legacy `hourly / daily / weekly` scheduling
+- Auto-detect database settings
+- Account health checks and automatic disable on consecutive errors
+- Separate untested / duplicate / proxy-assignment tasks
+- Systemd timer scheduling
+- Manual execution and log viewing
 
-### Full configuration reference
+### Troubleshooting
 
-Config file path: `/etc/sub2api/sub2test.env`
-
-#### API and state
-
-```env
-SUB2TEST_API_BASE_URL=http://127.0.0.1:38080/api/v1
-SUB2TEST_ADMIN_API_KEY=your-admin-api-key
-SUB2TEST_ERROR_STREAK_THRESHOLD=3
-SUB2TEST_STATE_FILE=/opt/sub2test/state.json
+```bash
+systemctl status sub2test.timer --no-pager
+journalctl -u sub2test.service -n 100 --no-pager
+sudo sub2test run-proxy-assign-now
 ```
 
-Notes:
+### Notes
+
+- Removing `/opt/sub2test` clears local state
+- `SUB2TEST_ADMIN_API_KEY` is masked in `show-config`
+- `OnCalendar` uses the server's local timezone
 
 - `SUB2TEST_ERROR_STREAK_THRESHOLD`: disable an account after this many consecutive `native_status=error` results
 - `SUB2TEST_STATE_FILE`: local persistence file path, default is `/opt/sub2test/state.json`
