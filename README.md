@@ -23,33 +23,6 @@ sudo bash /tmp/sub2test-installer.sh --force
 sudo sub2test show-config
 ```
 
-安装后会生成：
-
-- 配置文件：`/etc/sub2api/sub2test.env`
-- 状态文件：`/opt/sub2test/state.json`
-- 命令入口：`/usr/local/bin/sub2test`
-- timer：`/etc/systemd/system/sub2test.timer`
-
-### 常用调度示例
-
-#### 每天 00:00 执行
-
-```bash
-sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=00:00/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
-sudo sub2test enable
-```
-
-#### 每 6 小时执行一次
-
-```bash
-sudo sed -i 's/^SUB2TEST_DAILY_AT=.*/SUB2TEST_DAILY_AT=/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_EVERY_HOURS=.*/SUB2TEST_EVERY_HOURS=6/' /etc/sub2api/sub2test.env
-sudo sed -i 's/^SUB2TEST_RANDOMIZED_DELAY_SECONDS=.*/SUB2TEST_RANDOMIZED_DELAY_SECONDS=0/' /etc/sub2api/sub2test.env
-sudo sub2test enable
-```
-
 ### 常用命令
 
 ```bash
@@ -63,116 +36,29 @@ sudo sub2test menu
 
 ### 功能概览
 
-- 自动从 `docker-compose.yml` 或 `config.yaml` 推断数据库连接信息
-- 调用管理端 `/admin/accounts/{id}/test` 做账号测活
-- 本地持久化连续 `error` 次数到状态文件
-- 达到阈值后调用管理端 `/admin/accounts/{id}` 把账号置为 `disabled`
-- 支持未测 active 账号独立定时任务
-- 支持重复账号排查独立定时任务
-- 支持无代理账号批量分配 active 代理的独立定时任务
-- 支持固定每天某个时间执行
-- 支持每隔 N 小时执行一次
-- 保留旧的 `hourly / daily / weekly` 调度兼容方式
+- 自动发现数据库配置
+- 账号测活与连续 error 自动停用
+- 未测 / 重复账号 / 代理分配三类独立任务
+- 支持 systemd timer 定时执行
+- 支持手动执行与日志查看
 
 ### 完整配置说明
 
 配置文件路径：`/etc/sub2api/sub2test.env`
 
-#### API 与状态
-
-```env
-SUB2TEST_API_BASE_URL=http://127.0.0.1:38080/api/v1
-SUB2TEST_ADMIN_API_KEY=your-admin-api-key
-SUB2TEST_ERROR_STREAK_THRESHOLD=3
-SUB2TEST_STATE_FILE=/opt/sub2test/state.json
-```
-
-说明：
-
-- `SUB2TEST_ERROR_STREAK_THRESHOLD`：连续多少次 `native_status=error` 后停用账号
-- `SUB2TEST_STATE_FILE`：本地持久化文件路径，默认 `/opt/sub2test/state.json`
-
-#### 调度配置
-
-##### 方案 1：每天固定时间执行
-
-```env
-SUB2TEST_DAILY_AT=00:00
-SUB2TEST_EVERY_HOURS=
-SUB2TEST_RANDOMIZED_DELAY_SECONDS=0
-```
-
-说明：
-
-- `SUB2TEST_DAILY_AT` 格式必须是 `HH:MM`
-- 设置后优先级最高
-- `SUB2TEST_RANDOMIZED_DELAY_SECONDS=0` 表示不做随机延迟，尽量准点执行
-
-##### 方案 2：每隔几小时执行一次
-
-```env
-SUB2TEST_DAILY_AT=
-SUB2TEST_EVERY_HOURS=6
-SUB2TEST_RANDOMIZED_DELAY_SECONDS=0
-```
-
-说明：
-
-- `SUB2TEST_EVERY_HOURS` 取值范围 `1-23`
-- 例如 `6` 表示每 6 小时执行一次
-
-##### 方案 3：兼容旧调度方式
-
-```env
-SUB2TEST_SCHEDULE=daily
-```
-
-可选值：
-
-- `hourly`
-- `daily`
-- `weekly`
-
-优先级：
-
-1. `SUB2TEST_DAILY_AT`
-2. `SUB2TEST_EVERY_HOURS`
-3. `SUB2TEST_SCHEDULE`
-
 ### 查看和排障
-
-#### 查看 timer 状态
 
 ```bash
 systemctl status sub2test.timer --no-pager
-systemctl list-timers --all | grep sub2test
-sudo systemctl cat sub2test.timer
-```
-
-#### 查看执行日志
-
-```bash
-systemctl status sub2test.service --no-pager
 journalctl -u sub2test.service -n 100 --no-pager
+sudo sub2test run-proxy-assign-now
 ```
-
-#### 查看状态文件
-
-```bash
-cat /opt/sub2test/state.json
-```
-
-### 工作机制
-
-- `sub2test.timer` 负责按 systemd 时间规则触发
-- `sub2test.service` 负责执行一次 `sub2test run-once`
-- 脚本不是常驻业务进程，只在触发时运行，跑完退出
 
 ### 注意事项
 
-- 如果重装前删除 `/opt/sub2test`，默认也会删除旧的 `state.json`，连续错误计数会重新开始
-- `sub2test show-config` 中 `SUB2TEST_ADMIN_API_KEY=***set***` 只是脱敏显示，不代表真实值被改写
-- `OnCalendar` 使用服务器本地时区，固定时间执行前请确认系统时区正确
+- 删除 `/opt/sub2test` 会清空本地状态文件
+- `SUB2TEST_ADMIN_API_KEY` 只在 `show-config` 中脱敏显示
+- `OnCalendar` 使用服务器本地时区
 
 ### Release notes
 
