@@ -1937,9 +1937,9 @@ def run_account_test(row):
     original_native_status = classify_api_result(http_status, saw_success, error_text)
     native_status = original_native_status
 
-    if source_status == 'inactive' and native_status == 'error':
+    if source_status == 'inactive' and original_native_status == 'error':
         native_status = 'inactive'
-    elif source_status == 'inactive' and native_status == 'token_expired':
+    elif source_status == 'inactive' and original_native_status == 'token_expired':
         native_status = 'token_expired'
 
     account_state = get_account_state(state, account_id)
