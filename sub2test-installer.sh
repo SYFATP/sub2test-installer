@@ -1994,6 +1994,7 @@ def run_account_test(row):
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
         return build_result(
+            native_status='token_expired',
             mark_token_expired_attempted=True,
             mark_token_expired_success=mark_token_expired_success,
             mark_token_expired_status=mark_token_expired_status,
@@ -2005,6 +2006,7 @@ def run_account_test(row):
         if not mark_inactive_error_success:
             mark_inactive_error_detail = shorten_detail(mark_inactive_error_detail or (f'HTTP {mark_inactive_error_status}' if mark_inactive_error_status else 'mark inactive request failed'))
         return build_result(
+            native_status='inactive',
             mark_inactive_error_attempted=True,
             mark_inactive_error_success=mark_inactive_error_success,
             mark_inactive_error_status=mark_inactive_error_status,
@@ -2064,16 +2066,22 @@ for batch_start in range(0, len(rows), batch_size):
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
             message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} streak={item['streak_count']} detail={item['detail']}"
-            if item['mark_inactive_error_attempted']:
+        if item['mark_inactive_error_attempted']:
+            if item['source_status'] == 'inactive':
                 if item['mark_inactive_error_success']:
                     message += ' mark_inactive_error=success'
                 else:
                     message += f" mark_inactive_error=failed mark_inactive_error_detail={item['mark_inactive_error_detail']}"
-            if item['mark_error_attempted'] and item['source_status'] != 'inactive':
-                if item['mark_error_success']:
-                    message += ' mark_error=success'
+            else:
+                if item['mark_inactive_error_success']:
+                    message += ' mark_inactive_error=success'
                 else:
-                    message += f" mark_error=failed mark_error_detail={item['mark_error_detail']}"
+                    message += f" mark_inactive_error=failed mark_inactive_error_detail={item['mark_inactive_error_detail']}"
+        if item['mark_error_attempted'] and item['source_status'] != 'inactive':
+            if item['mark_error_success']:
+                message += ' mark_error=success'
+            else:
+                message += f" mark_error=failed mark_error_detail={item['mark_error_detail']}"
             if item['mark_token_expired_attempted']:
                 if item['mark_token_expired_success']:
                     message += ' mark_token_expired=success'
