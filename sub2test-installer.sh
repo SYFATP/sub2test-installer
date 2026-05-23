@@ -1947,12 +1947,6 @@ def run_account_test(row):
             normalized_status = 'inactive'
     _, streak_count, disable_needed = should_disable_account(account_state, source_status, normalized_status, error_streak_threshold)
 
-    def emit_trace(branch_name: str, writeback: str):
-        print(
-            f"TRACE account={account_id} source_status={source_status} branch={branch_name} "
-            f"normalized_status={normalized_status} original_status={original_native_status} writeback={writeback}"
-        )
-
     inactive_source = (source_status or '').strip().lower() == 'inactive'
 
     def build_result(**overrides):
@@ -1965,128 +1959,91 @@ def run_account_test(row):
             'saw_success': saw_success,
             'latency_ms': latency_ms,
             'native_status': normalized_status,
-            'original_native_status': original_native_status,
             'display_status': normalized_status,
             'detail': shorten_detail(result_text if saw_success else error_text),
-            'branch': 'none',
-            'writeback': 'skipped',
             'streak_count': streak_count,
             'disable_attempted': False,
             'disable_success': False,
-            'disable_status': None,
             'disable_detail': '',
             'mark_error_attempted': False,
             'mark_error_success': False,
-            'mark_error_status': None,
             'mark_error_detail': '',
             'mark_token_expired_attempted': False,
             'mark_token_expired_success': False,
-            'mark_token_expired_status': None,
             'mark_token_expired_detail': '',
             'enable_attempted': False,
             'enable_success': False,
-            'enable_status': None,
             'enable_detail': '',
-            'keep_inactive_attempted': False,
-            'keep_inactive_success': False,
-            'keep_inactive_status': None,
-            'keep_inactive_detail': '',
             'mark_inactive_error_attempted': False,
             'mark_inactive_error_success': False,
-            'mark_inactive_error_status': None,
             'mark_inactive_error_detail': '',
         }
         result.update(overrides)
         return result
 
     if inactive_source and original_native_status == 'success':
-        enable_success, enable_status, enable_detail = enable_account(int(account_id))
+        enable_success, _, enable_detail = enable_account(int(account_id))
         if not enable_success:
-            enable_detail = shorten_detail(enable_detail or (f'HTTP {enable_status}' if enable_status else 'enable request failed'))
-        emit_trace('inactive_success', 'success' if enable_success else 'failed')
+            enable_detail = shorten_detail(enable_detail or 'enable request failed')
         return build_result(
-            branch='inactive_success',
-            writeback='success' if enable_success else 'failed',
             enable_attempted=True,
             enable_success=enable_success,
-            enable_status=enable_status,
             enable_detail=enable_detail,
         )
 
     if inactive_source and original_native_status == 'token_expired':
-        mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
+        mark_token_expired_success, _, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
-            mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
-        emit_trace('inactive_token_expired', 'success' if mark_token_expired_success else 'failed')
+            mark_token_expired_detail = shorten_detail(mark_token_expired_detail or 'mark token_expired request failed')
         return build_result(
-            branch='inactive_token_expired',
-            writeback='success' if mark_token_expired_success else 'failed',
             display_status='token_expired',
             mark_token_expired_attempted=True,
             mark_token_expired_success=mark_token_expired_success,
-            mark_token_expired_status=mark_token_expired_status,
             mark_token_expired_detail=mark_token_expired_detail,
         )
 
     if inactive_source:
-        mark_inactive_error_success, mark_inactive_error_status, mark_inactive_error_detail = mark_account_inactive_error(int(account_id))
+        mark_inactive_error_success, _, mark_inactive_error_detail = mark_account_inactive_error(int(account_id))
         if not mark_inactive_error_success:
-            mark_inactive_error_detail = shorten_detail(mark_inactive_error_detail or (f'HTTP {mark_inactive_error_status}' if mark_inactive_error_status else 'mark inactive request failed'))
-        emit_trace('inactive_error_fallback', 'success' if mark_inactive_error_success else 'failed')
+            mark_inactive_error_detail = shorten_detail(mark_inactive_error_detail or 'mark inactive request failed')
         return build_result(
-            branch='inactive_error_fallback',
-            writeback='success' if mark_inactive_error_success else 'failed',
             display_status='inactive',
             mark_inactive_error_attempted=True,
             mark_inactive_error_success=mark_inactive_error_success,
-            mark_inactive_error_status=mark_inactive_error_status,
             mark_inactive_error_detail=mark_inactive_error_detail,
         )
 
     if normalized_status == 'token_expired':
-        mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
+        mark_token_expired_success, _, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
-            mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
-        emit_trace('normal_token_expired', 'success' if mark_token_expired_success else 'failed')
+            mark_token_expired_detail = shorten_detail(mark_token_expired_detail or 'mark token_expired request failed')
         return build_result(
-            branch='normal_token_expired',
-            writeback='success' if mark_token_expired_success else 'failed',
             mark_token_expired_attempted=True,
             mark_token_expired_success=mark_token_expired_success,
-            mark_token_expired_status=mark_token_expired_status,
             mark_token_expired_detail=mark_token_expired_detail,
         )
 
     if normalized_status == 'error':
-        mark_error_success, mark_error_status, mark_error_detail = mark_account_error(int(account_id))
+        mark_error_success, _, mark_error_detail = mark_account_error(int(account_id))
         if not mark_error_success:
-            mark_error_detail = shorten_detail(mark_error_detail or (f'HTTP {mark_error_status}' if mark_error_status else 'mark error request failed'))
-        emit_trace('normal_error', 'success' if mark_error_success else 'failed')
+            mark_error_detail = shorten_detail(mark_error_detail or 'mark error request failed')
         return build_result(
-            branch='normal_error',
-            writeback='success' if mark_error_success else 'failed',
             mark_error_attempted=True,
             mark_error_success=mark_error_success,
-            mark_error_status=mark_error_status,
             mark_error_detail=mark_error_detail,
         )
 
     if disable_needed:
-        disable_success, disable_status, disable_detail = disable_account(int(account_id))
+        disable_success, _, disable_detail = disable_account(int(account_id))
         if not disable_success:
-            disable_detail = shorten_detail(disable_detail or (f'HTTP {disable_status}' if disable_status else 'disable request failed'))
-        emit_trace('disable_threshold', 'success' if disable_success else 'failed')
+            disable_detail = shorten_detail(disable_detail or 'disable request failed')
         return build_result(
-            branch='disable_threshold',
-            writeback='success' if disable_success else 'failed',
             disable_attempted=True,
             disable_success=disable_success,
-            disable_status=disable_status,
             disable_detail=disable_detail,
         )
 
-    emit_trace('none', 'skipped')
-    return build_result(branch='none', writeback='skipped')
+    return build_result()
 
 
 for batch_start in range(0, len(rows), batch_size):
@@ -2108,11 +2065,9 @@ for batch_start in range(0, len(rows), batch_size):
         result = 'success' if item['saw_success'] else 'failed'
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
-            message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['display_status']} native_status={item['native_status']} original_native_status={item['original_native_status']} branch={item['branch']} writeback={item['writeback']} streak={item['streak_count']} detail={item['detail']}"
+            message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['display_status']} native_status={item['native_status']} streak={item['streak_count']} detail={item['detail']}"
             if item['mark_inactive_error_attempted']:
-                if item['mark_inactive_error_success']:
-                    message += ' mark_inactive_error=success'
-                else:
+                if not item['mark_inactive_error_success']:
                     message += f" mark_inactive_error=failed mark_inactive_error_detail={item['mark_inactive_error_detail']}"
             if item['mark_error_attempted'] and (item['source_status'] or '').strip().lower() != 'inactive':
                 if item['mark_error_success']:
@@ -2120,24 +2075,13 @@ for batch_start in range(0, len(rows), batch_size):
                 else:
                     message += f" mark_error=failed mark_error_detail={item['mark_error_detail']}"
             if item['mark_token_expired_attempted']:
-                if item['mark_token_expired_success']:
-                    message += ' mark_token_expired=success'
-                else:
+                if not item['mark_token_expired_success']:
                     message += f" mark_token_expired=failed mark_token_expired_detail={item['mark_token_expired_detail']}"
             if item['enable_attempted']:
-                if item['enable_success']:
-                    message += ' enable=success'
-                else:
+                if not item['enable_success']:
                     message += f" enable=failed enable_detail={item['enable_detail']}"
-            if item['keep_inactive_attempted']:
-                if item['keep_inactive_success']:
-                    message += ' keep_inactive=success'
-                else:
-                    message += f" keep_inactive=failed keep_inactive_detail={item['keep_inactive_detail']}"
             if item['disable_attempted']:
-                if item['disable_success']:
-                    message += ' disable=success'
-                else:
+                if not item['disable_success']:
                     message += f" disable=failed disable_detail={item['disable_detail']}"
             print(message)
         except BrokenPipeError:
