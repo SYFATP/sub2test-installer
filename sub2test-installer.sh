@@ -789,10 +789,10 @@ build_account_where_clause() {
       printf "%s" "status = 'temp_unschedulable'"
       ;;
     untested)
-      printf "%s" "(status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
+      printf "%s" "(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
       ;;
     *)
-      printf "%s" "(status = 'error' OR (status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())))"
+      printf "%s" "(status = 'error' OR (status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())))"
       ;;
   esac
 }
@@ -1347,7 +1347,7 @@ elif mode == 'temp_unschedulable':
     where_clause = "status = 'temp_unschedulable'"
     order_clause = "priority ASC, id ASC"
 elif mode == 'untested':
-    where_clause = "(status = 'active' AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
+    where_clause = "(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
     order_clause = "priority ASC, id ASC"
 else:
     where_clause = """
@@ -1355,6 +1355,7 @@ else:
       status = 'error'
       OR (
         status = 'active'
+        AND schedulable = TRUE
         AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW())
         AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())
       )
@@ -1604,7 +1605,10 @@ def mark_account_token_expired(account_id: int):
 
 
 def disable_account(account_id: int):
-    return update_account_status(account_id, 'inactive')
+    return update_account_fields(account_id, {
+        'status': 'inactive',
+        'schedulable': False,
+    })
 
 
 def enable_account(account_id: int):
