@@ -1948,6 +1948,7 @@ def run_account_test(row):
             'saw_success': saw_success,
             'latency_ms': latency_ms,
             'native_status': native_status,
+            'display_status': native_status,
             'detail': shorten_detail(result_text if saw_success else error_text),
             'streak_count': streak_count,
             'disable_attempted': False,
@@ -1994,7 +1995,7 @@ def run_account_test(row):
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
         return build_result(
-            native_status='token_expired',
+            display_status='token_expired',
             mark_token_expired_attempted=True,
             mark_token_expired_success=mark_token_expired_success,
             mark_token_expired_status=mark_token_expired_status,
@@ -2006,7 +2007,7 @@ def run_account_test(row):
         if not mark_inactive_error_success:
             mark_inactive_error_detail = shorten_detail(mark_inactive_error_detail or (f'HTTP {mark_inactive_error_status}' if mark_inactive_error_status else 'mark inactive request failed'))
         return build_result(
-            native_status='inactive',
+            display_status='inactive',
             mark_inactive_error_attempted=True,
             mark_inactive_error_success=mark_inactive_error_success,
             mark_inactive_error_status=mark_inactive_error_status,
@@ -2059,13 +2060,16 @@ for batch_start in range(0, len(rows), batch_size):
         status_counts[item['native_status']] += 1
         processed_account_ids.add(item['account_id'])
         account_state = get_account_state(state, item['account_id'])
-        apply_account_state(account_state, item['native_status'], item['streak_count'], item['disable_success'], item['enable_success'])
-        if item['mark_error_success']:
+        if item['source_status'] == 'inactive' and item['display_status'] == 'inactive':
+            apply_account_state(account_state, 'inactive', item['streak_count'], item['disable_success'], item['enable_success'])
+        else:
+            apply_account_state(account_state, item['native_status'], item['streak_count'], item['disable_success'], item['enable_success'])
+        if item['mark_error_success'] and item['source_status'] != 'inactive':
             account_state['last_native_status'] = 'error'
         result = 'success' if item['saw_success'] else 'failed'
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
-            message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['native_status']} streak={item['streak_count']} detail={item['detail']}"
+            message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['display_status']} streak={item['streak_count']} detail={item['detail']}"
             if item['mark_inactive_error_attempted']:
                 if item['mark_inactive_error_success']:
                     message += ' mark_inactive_error=success'
