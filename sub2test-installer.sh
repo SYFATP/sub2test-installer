@@ -1597,7 +1597,9 @@ def mark_account_error(account_id: int):
 
 
 def mark_account_token_expired(account_id: int):
-    return update_account_status(account_id, 'temp_unschedulable')
+    return update_account_fields(account_id, {
+        'schedulable': False,
+    })
 
 
 def disable_account(account_id: int):
@@ -1663,6 +1665,8 @@ def classify_error_text(http_status: int | None, text: str) -> str:
         return 'rate_limited'
     if 'token_expired' in raw or 'token expired' in raw:
         return 'token_expired'
+    if 'token_invalidated' in raw:
+        return 'error'
     if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalidated', 'invalid token', 'token invalid', 'login again', 'sign in again', 'authentication token', 'no access token available')):
         return 'error'
     if raw:
