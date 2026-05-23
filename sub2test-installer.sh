@@ -1953,6 +1953,8 @@ def run_account_test(row):
             f"normalized_status={normalized_status} original_status={original_native_status} writeback={writeback}"
         )
 
+    inactive_source = (source_status or '').strip().lower() == 'inactive'
+
     def build_result(**overrides):
         result = {
             'account_id': account_id,
@@ -1997,7 +1999,7 @@ def run_account_test(row):
         result.update(overrides)
         return result
 
-    if source_status == 'inactive' and original_native_status == 'success':
+    if inactive_source and original_native_status == 'success':
         enable_success, enable_status, enable_detail = enable_account(int(account_id))
         if not enable_success:
             enable_detail = shorten_detail(enable_detail or (f'HTTP {enable_status}' if enable_status else 'enable request failed'))
@@ -2011,7 +2013,7 @@ def run_account_test(row):
             enable_detail=enable_detail,
         )
 
-    if source_status == 'inactive' and original_native_status == 'token_expired':
+    if inactive_source and original_native_status == 'token_expired':
         mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
@@ -2026,7 +2028,7 @@ def run_account_test(row):
             mark_token_expired_detail=mark_token_expired_detail,
         )
 
-    if source_status == 'inactive':
+    if inactive_source:
         mark_inactive_error_success, mark_inactive_error_status, mark_inactive_error_detail = mark_account_inactive_error(int(account_id))
         if not mark_inactive_error_success:
             mark_inactive_error_detail = shorten_detail(mark_inactive_error_detail or (f'HTTP {mark_inactive_error_status}' if mark_inactive_error_status else 'mark inactive request failed'))
@@ -2097,11 +2099,11 @@ for batch_start in range(0, len(rows), batch_size):
         status_counts[item['native_status']] += 1
         processed_account_ids.add(item['account_id'])
         account_state = get_account_state(state, item['account_id'])
-        if item['source_status'] == 'inactive' and item['display_status'] == 'inactive':
+        if inactive_source and item['display_status'] == 'inactive':
             apply_account_state(account_state, 'inactive', item['streak_count'], item['disable_success'], item['enable_success'])
         else:
             apply_account_state(account_state, item['native_status'], item['streak_count'], item['disable_success'], item['enable_success'])
-        if item['mark_error_success'] and item['source_status'] != 'inactive':
+        if item['mark_error_success'] and (item['source_status'] or '').strip().lower() != 'inactive':
             account_state['last_native_status'] = 'error'
         result = 'success' if item['saw_success'] else 'failed'
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
@@ -2112,7 +2114,7 @@ for batch_start in range(0, len(rows), batch_size):
                     message += ' mark_inactive_error=success'
                 else:
                     message += f" mark_inactive_error=failed mark_inactive_error_detail={item['mark_inactive_error_detail']}"
-            if item['mark_error_attempted'] and item['source_status'] != 'inactive':
+            if item['mark_error_attempted'] and (item['source_status'] or '').strip().lower() != 'inactive':
                 if item['mark_error_success']:
                     message += ' mark_error=success'
                 else:
