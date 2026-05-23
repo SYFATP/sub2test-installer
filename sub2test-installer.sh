@@ -1934,9 +1934,15 @@ def run_account_test(row):
         error_text = safe_exception_text(exc)
 
     latency_ms = int((time.time() - started) * 1000)
-    native_status = classify_api_result(http_status, saw_success, error_text)
+    original_native_status = classify_api_result(http_status, saw_success, error_text)
+    native_status = original_native_status
     account_state = get_account_state(state, account_id)
     _, streak_count, disable_needed = should_disable_account(account_state, source_status, native_status, error_streak_threshold)
+
+    if source_status == 'inactive' and native_status == 'error':
+        native_status = 'inactive'
+    elif source_status == 'inactive' and native_status == 'token_expired':
+        native_status = 'token_expired'
 
     def build_result(**overrides):
         result = {
@@ -1948,6 +1954,7 @@ def run_account_test(row):
             'saw_success': saw_success,
             'latency_ms': latency_ms,
             'native_status': native_status,
+            'original_native_status': original_native_status,
             'display_status': native_status,
             'detail': shorten_detail(result_text if saw_success else error_text),
             'branch': 'none',
@@ -2083,7 +2090,7 @@ for batch_start in range(0, len(rows), batch_size):
         result = 'success' if item['saw_success'] else 'failed'
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
-            message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['display_status']} native_status={item['native_status']} branch={item['branch']} writeback={item['writeback']} streak={item['streak_count']} detail={item['detail']}"
+            message = f"[{result}] account={item['account_id']} name={display_name} platform={item['platform']} type={item['account_type']} source_status={item['source_status']} latency_ms={item['latency_ms']} status={item['display_status']} native_status={item['native_status']} original_native_status={item['original_native_status']} branch={item['branch']} writeback={item['writeback']} streak={item['streak_count']} detail={item['detail']}"
             if item['mark_inactive_error_attempted']:
                 if item['mark_inactive_error_success']:
                     message += ' mark_inactive_error=success'
