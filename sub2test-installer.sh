@@ -975,7 +975,7 @@ if proxy_index < 1:
 def shorten_detail(detail: str) -> str:
     detail = '' if detail is None else str(detail)
     detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
-    detail = detail.replace(chr(10), ' ')
+    detail = detail.replace(chr(10), ' ').replace(chr(13), ' ')
     detail = ' '.join(detail.split())
     return detail[:180]
 
@@ -1214,7 +1214,7 @@ headers = {
 def shorten_detail(detail: str) -> str:
     detail = '' if detail is None else str(detail)
     detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
-    detail = detail.replace(chr(10), ' ')
+    detail = detail.replace(chr(10), ' ').replace(chr(13), ' ')
     detail = ' '.join(detail.split())
     return detail[:180]
 
@@ -3741,7 +3741,7 @@ if proxy_index < 1:
 def shorten_detail(detail: str) -> str:
     detail = '' if detail is None else str(detail)
     detail = detail.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
-    detail = detail.replace(chr(10), ' ')
+    detail = detail.replace(chr(10), ' ').replace(chr(13), ' ')
     detail = ' '.join(detail.split())
     return detail[:180]
 
