@@ -1779,7 +1779,7 @@ def run_account_test(row):
         enable_success, enable_status, enable_detail = enable_account(int(account_id))
         if not enable_success:
             enable_detail = shorten_detail(enable_detail or (f'HTTP {enable_status}' if enable_status else 'enable request failed'))
-    elif source_status == 'inactive':
+    elif source_status == 'inactive' and native_status == 'error':
         keep_inactive_attempted = True
         keep_inactive_success, keep_inactive_status, keep_inactive_detail = disable_account(int(account_id))
         if not keep_inactive_success:
