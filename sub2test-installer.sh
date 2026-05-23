@@ -1598,6 +1598,7 @@ def mark_account_error(account_id: int):
 
 def mark_account_token_expired(account_id: int):
     return update_account_fields(account_id, {
+        'status': 'inactive',
         'schedulable': False,
     })
 
