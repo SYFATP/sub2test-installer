@@ -1957,29 +1957,32 @@ def run_account_test(row):
     keep_inactive_success = False
     keep_inactive_detail = ''
     keep_inactive_status = None
+    mark_inactive_error_attempted = False
+    mark_inactive_error_success = False
+    mark_inactive_error_detail = ''
+    mark_inactive_error_status = None
 
     if source_status == 'inactive' and native_status == 'success':
         enable_attempted = True
         enable_success, enable_status, enable_detail = enable_account(int(account_id))
         if not enable_success:
             enable_detail = shorten_detail(enable_detail or (f'HTTP {enable_status}' if enable_status else 'enable request failed'))
-    elif source_status == 'inactive' and native_status != 'success':
-        if native_status == 'token_expired':
-            mark_token_expired_attempted = True
-            mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
-            if not mark_token_expired_success:
-                mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
-        else:
-            keep_inactive_attempted = True
-            keep_inactive_success, keep_inactive_status, keep_inactive_detail = mark_account_inactive_error(int(account_id))
-            if not keep_inactive_success:
-                keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
+    elif source_status == 'inactive' and native_status == 'token_expired':
+        mark_token_expired_attempted = True
+        mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
+        if not mark_token_expired_success:
+            mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
+    elif source_status == 'inactive':
+        mark_inactive_error_attempted = True
+        mark_inactive_error_success, mark_inactive_error_status, mark_inactive_error_detail = mark_account_inactive_error(int(account_id))
+        if not mark_inactive_error_success:
+            mark_inactive_error_detail = shorten_detail(mark_inactive_error_detail or (f'HTTP {mark_inactive_error_status}' if mark_inactive_error_status else 'mark inactive request failed'))
     elif native_status == 'token_expired':
         mark_token_expired_attempted = True
         mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
-    elif source_status != 'inactive' and native_status == 'error':
+    elif native_status == 'error':
         mark_error_attempted = True
         mark_error_success, mark_error_status, mark_error_detail = mark_account_error(int(account_id))
         if not mark_error_success:
@@ -1989,20 +1992,6 @@ def run_account_test(row):
         disable_success, disable_status, disable_detail = disable_account(int(account_id))
         if not disable_success:
             disable_detail = shorten_detail(disable_detail or (f'HTTP {disable_status}' if disable_status else 'disable request failed'))
-
-    if source_status == 'inactive' and native_status != 'success' and native_status != 'token_expired':
-        keep_inactive_attempted = True
-        keep_inactive_success, keep_inactive_status, keep_inactive_detail = mark_account_inactive_error(int(account_id))
-        if not keep_inactive_success:
-            keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
-        mark_error_attempted = False
-        mark_error_success = False
-        mark_error_status = None
-        mark_error_detail = ''
-        disable_attempted = False
-        disable_success = False
-        disable_status = None
-        disable_detail = ''
 
     return {
         'account_id': account_id,
@@ -2035,6 +2024,10 @@ def run_account_test(row):
         'keep_inactive_success': keep_inactive_success,
         'keep_inactive_status': keep_inactive_status,
         'keep_inactive_detail': keep_inactive_detail,
+        'mark_inactive_error_attempted': mark_inactive_error_attempted,
+        'mark_inactive_error_success': mark_inactive_error_success,
+        'mark_inactive_error_status': mark_inactive_error_status,
+        'mark_inactive_error_detail': mark_inactive_error_detail,
     }
 
 
@@ -2075,6 +2068,11 @@ for batch_start in range(0, len(rows), batch_size):
                     message += ' keep_inactive=success'
                 else:
                     message += f" keep_inactive=failed keep_inactive_detail={item['keep_inactive_detail']}"
+            if item['mark_inactive_error_attempted']:
+                if item['mark_inactive_error_success']:
+                    message += ' mark_inactive_error=success'
+                else:
+                    message += f" mark_inactive_error=failed mark_inactive_error_detail={item['mark_inactive_error_detail']}"
             if item['disable_attempted']:
                 if item['disable_success']:
                     message += ' disable=success'
