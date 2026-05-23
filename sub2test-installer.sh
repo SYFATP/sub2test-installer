@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SUB2TEST_VERSION="0.1.6"
+SUB2TEST_VERSION="0.1.7"
 SUB2TEST_PROJECT_URL="https://github.com/SYFATP/sub2test-installer"
 INSTALL_ROOT="/opt/sub2test"
 CONFIG_DIR="/etc/sub2api"
@@ -2345,7 +2345,7 @@ t() {
     zh:enabled_hourly) echo "已启用：每小时自动执行一次%s" ;;
     zh:enabled_weekly) echo "已启用：每周自动执行一次%s" ;;
     zh:enabled_daily_fallback) echo "已启用：每天自动执行一次%s" ;;
-    zh:config_intro) echo "当前自动任务说明：" ;;
+    zh:config_intro) echo "当前自动任务说明（本版更新：inactive 测活失败保持 inactive，token_expired 追加未授权分组）：" ;;
     zh:runtime_overview_title) echo "运行概览：" ;;
     zh:runtime_status_label) echo "当前状态" ;;
     zh:runtime_last_run_label) echo "上次执行时间" ;;
