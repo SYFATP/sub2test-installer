@@ -785,22 +785,57 @@ WantedBy=timers.target
 EOF_TIMER
 }
 
+build_unauthorized_group_exclusion_clause() {
+  local configured_ids=()
+  local raw value
+  for raw in \
+    "${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}" \
+    "${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}" \
+    "${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}" \
+    "${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}"; do
+    value="$(printf '%s' "$raw" | tr -d '[:space:]')"
+    case "$value" in
+      ''|*[!0-9]*)
+        continue
+        ;;
+    esac
+    [ "$value" -gt 0 ] || continue
+    case " ${configured_ids[*]} " in
+      *" $value "*)
+        continue
+        ;;
+    esac
+    configured_ids+=("$value")
+  done
+
+  if [ "${#configured_ids[@]}" -eq 0 ]; then
+    printf '%s' 'TRUE'
+    return 0
+  fi
+
+  local joined_ids
+  joined_ids="$(IFS=,; printf '%s' "${configured_ids[*]}")"
+  printf "%s" "NOT EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = accounts.id AND ag.group_id IN (${joined_ids}))"
+}
+
 build_account_where_clause() {
+  local unauthorized_exclusion
+  unauthorized_exclusion="$(build_unauthorized_group_exclusion_clause)"
   case "${1:-all}" in
     error)
-      printf "%s" "status = 'error'"
+      printf "%s" "(status = 'error' AND ${unauthorized_exclusion})"
       ;;
     disabled)
-      printf "%s" "status = 'inactive'"
+      printf "%s" "(status = 'inactive' AND ${unauthorized_exclusion})"
       ;;
     temp_unschedulable)
-      printf "%s" "status = 'temp_unschedulable'"
+      printf "%s" "(status = 'temp_unschedulable' AND ${unauthorized_exclusion})"
       ;;
     untested)
-      printf "%s" "(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
+      printf "%s" "(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()) AND ${unauthorized_exclusion})"
       ;;
     *)
-      printf "%s" "(status = 'error' OR (status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())))"
+      printf "%s" "((status = 'error' OR (status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))) AND ${unauthorized_exclusion})"
       ;;
   esac
 }
@@ -1345,28 +1380,53 @@ import psycopg2
 output_path = sys.argv[1]
 mode = sys.argv[2]
 
+configured_group_ids = []
+for env_name in (
+    'SUB2TEST_UNAUTHORIZED_GROUP_OPENAI',
+    'SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC',
+    'SUB2TEST_UNAUTHORIZED_GROUP_GEMINI',
+    'SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY',
+):
+    raw_value = (os.getenv(env_name, '') or '').strip()
+    if not raw_value:
+        continue
+    try:
+        group_id = int(raw_value)
+    except Exception:
+        continue
+    if group_id <= 0 or group_id in configured_group_ids:
+        continue
+    configured_group_ids.append(group_id)
+
+exclusion_clause = 'TRUE'
+if configured_group_ids:
+    exclusion_clause = f"NOT EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = accounts.id AND ag.group_id IN ({','.join(str(group_id) for group_id in configured_group_ids)}))"
+
 if mode == 'error':
-    where_clause = "status = 'error'"
+    where_clause = f"(status = 'error' AND {exclusion_clause})"
     order_clause = "priority ASC, id ASC"
 elif mode == 'disabled':
-    where_clause = "status = 'inactive'"
+    where_clause = f"(status = 'inactive' AND {exclusion_clause})"
     order_clause = "priority ASC, id ASC"
 elif mode == 'temp_unschedulable':
-    where_clause = "status = 'temp_unschedulable'"
+    where_clause = f"(status = 'temp_unschedulable' AND {exclusion_clause})"
     order_clause = "priority ASC, id ASC"
 elif mode == 'untested':
-    where_clause = "(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))"
+    where_clause = f"(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()) AND {exclusion_clause})"
     order_clause = "priority ASC, id ASC"
 else:
-    where_clause = """
+    where_clause = f"""
     (
-      status = 'error'
-      OR (
-        status = 'active'
-        AND schedulable = TRUE
-        AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW())
-        AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())
+      (
+        status = 'error'
+        OR (
+          status = 'active'
+          AND schedulable = TRUE
+          AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW())
+          AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())
+        )
       )
+      AND {exclusion_clause}
     )
     """
     order_clause = "CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC"
