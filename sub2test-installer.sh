@@ -169,6 +169,14 @@ SUB2TEST_DB_CONTAINER={keep("SUB2TEST_DB_CONTAINER", "")}
 SUB2TEST_API_BASE_URL={keep("SUB2TEST_API_BASE_URL", "")}
 # 管理端 x-api-key，用于调用 /admin/accounts/{{id}}/test
 SUB2TEST_ADMIN_API_KEY={keep("SUB2TEST_ADMIN_API_KEY", "")}
+# OpenAI 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
+SUB2TEST_UNAUTHORIZED_GROUP_OPENAI={keep("SUB2TEST_UNAUTHORIZED_GROUP_OPENAI", "")}
+# Anthropic 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
+SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC={keep("SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC", "")}
+# Gemini 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
+SUB2TEST_UNAUTHORIZED_GROUP_GEMINI={keep("SUB2TEST_UNAUTHORIZED_GROUP_GEMINI", "")}
+# Antigravity 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
+SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY={keep("SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY", "")}
 # 连续 error 达到该次数后自动停用账号
 SUB2TEST_ERROR_STREAK_THRESHOLD={keep("SUB2TEST_ERROR_STREAK_THRESHOLD", "3")}
 # sub2test 本地状态文件路径
@@ -1597,10 +1605,90 @@ def mark_account_error(account_id: int):
     return update_account_status(account_id, 'error')
 
 
-def mark_account_token_expired(account_id: int):
+def get_platform_unauthorized_group_id(platform: str) -> int | None:
+    platform_key = (platform or '').strip().lower()
+    if not platform_key:
+        return None
+    env_name = f"SUB2TEST_UNAUTHORIZED_GROUP_{platform_key.upper()}"
+    raw = get_env(env_name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except Exception:
+        print(f'{env_name} must be an integer, got: {raw}', file=sys.stderr)
+        return None
+    return value if value > 0 else None
+
+
+def fetch_account_group_ids(account_id: int):
+    headers = {
+        'x-api-key': get_env('SUB2TEST_ADMIN_API_KEY'),
+        'Accept': 'application/json',
+    }
+    req = urllib.request.Request(
+        f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}",
+        headers=headers,
+        method='GET',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+            body = response.read().decode('utf-8', errors='replace')
+            payload = json.loads(body) if body else {}
+    except urllib.error.HTTPError as err:
+        return None, False, err.code, response_error_detail(err.code, err.read())
+    except Exception as exc:
+        return None, False, None, safe_exception_text(exc)
+
+    account_payload = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(account_payload, dict):
+        account_payload = payload if isinstance(payload, dict) else {}
+
+    group_ids_raw = account_payload.get('group_ids')
+    if not isinstance(group_ids_raw, list):
+        group_ids_raw = []
+
+    normalized_group_ids = []
+    seen = set()
+    for item in group_ids_raw:
+        try:
+            group_id = int(item)
+        except Exception:
+            continue
+        if group_id <= 0 or group_id in seen:
+            continue
+        seen.add(group_id)
+        normalized_group_ids.append(group_id)
+
+    return normalized_group_ids, True, None, ''
+
+
+def merge_group_ids(existing_group_ids, extra_group_id: int | None):
+    merged = []
+    seen = set()
+    for item in existing_group_ids or []:
+        try:
+            group_id = int(item)
+        except Exception:
+            continue
+        if group_id <= 0 or group_id in seen:
+            continue
+        seen.add(group_id)
+        merged.append(group_id)
+    if extra_group_id is not None and extra_group_id > 0 and extra_group_id not in seen:
+        merged.append(extra_group_id)
+    return merged
+
+
+def mark_account_token_expired(account_id: int, platform: str):
+    existing_group_ids, fetch_success, fetch_status, fetch_detail = fetch_account_group_ids(account_id)
+    if not fetch_success:
+        return False, fetch_status, fetch_detail
+    merged_group_ids = merge_group_ids(existing_group_ids, get_platform_unauthorized_group_id(platform))
     return update_account_fields(account_id, {
-        'status': 'active',
+        'status': 'inactive',
         'schedulable': False,
+        'group_ids': merged_group_ids,
     })
 
 
@@ -1612,7 +1700,10 @@ def disable_account(account_id: int):
 
 
 def enable_account(account_id: int):
-    return update_account_status(account_id, 'active')
+    return update_account_fields(account_id, {
+        'status': 'active',
+        'schedulable': True,
+    })
 
 
 state = load_state(state_file)
@@ -1811,7 +1902,7 @@ def run_account_test(row):
             keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
     elif native_status == 'token_expired':
         mark_token_expired_attempted = True
-        mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id))
+        mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
     elif source_status != 'inactive' and native_status == 'error':
@@ -2035,8 +2126,22 @@ t() {
     en:label_proxy_assign_mode) echo "Proxy-assignment mode (index/random)" ;;
     en:label_proxy_assign_index) echo "Proxy-assignment index (1-based for index mode)" ;;
     en:last_proxy_assign_log_title) echo "Last proxy-assignment log:" ;;
-    en:menu_proxy_assign_task) echo "Proxy-assignment task menu" ;;
-    en:menu_run_proxy_assign) echo "Run proxy-assignment once" ;;
+    en:menu_groups_task) echo "Unauthorized-group menu" ;;
+    en:groups_menu_title) echo "Unauthorized-group menu" ;;
+    en:groups_menu_list) echo "List active groups" ;;
+    en:groups_menu_set_openai) echo "Set OpenAI unauthorized group" ;;
+    en:groups_menu_set_anthropic) echo "Set Anthropic unauthorized group" ;;
+    en:groups_menu_set_gemini) echo "Set Gemini unauthorized group" ;;
+    en:groups_menu_set_antigravity) echo "Set Antigravity unauthorized group" ;;
+    en:groups_menu_edit_all) echo "Edit all unauthorized groups" ;;
+    en:groups_config_title) echo "Current unauthorized-group parameters:" ;;
+    en:groups_list_title) echo "Active groups:" ;;
+    en:groups_list_empty) echo "No active groups found." ;;
+    en:groups_list_failed) echo "Failed to fetch groups." ;;
+    en:label_unauthorized_group_openai) echo "OpenAI unauthorized group ID" ;;
+    en:label_unauthorized_group_anthropic) echo "Anthropic unauthorized group ID" ;;
+    en:label_unauthorized_group_gemini) echo "Gemini unauthorized group ID" ;;
+    en:label_unauthorized_group_antigravity) echo "Antigravity unauthorized group ID" ;;
     en:manual_conflict_prompt) echo "Stop the running or queued automatic task(s) and continue with this manual run? [y/N]" ;;
     en:manual_conflict_cancelled) echo "Manual run cancelled." ;;
     en:manual_conflict_stopping) echo "Stopping automatic task(s)..." ;;
@@ -2071,7 +2176,7 @@ t() {
     en:full_menu_config) echo "Edit full task config" ;;
     en:full_menu_enable) echo "Enable full automatic task" ;;
     en:full_menu_disable) echo "Disable full automatic task" ;;
-    en:full_menu_run_all) echo "Run once (all accounts)" ;;
+    en:full_menu_run_all) echo "Run once (active + error accounts)" ;;
     en:full_menu_run_error) echo "Run once (error accounts only)" ;;
     en:full_menu_run_disabled) echo "Run once (disabled accounts only)" ;;
     en:full_menu_show_log) echo "Show last full-task log" ;;
@@ -2193,6 +2298,22 @@ t() {
     zh:label_proxy_assign_mode) echo "代理分配模式（index/random）" ;;
     zh:label_proxy_assign_index) echo "代理分配序号（index 模式从 1 开始）" ;;
     zh:last_proxy_assign_log_title) echo "上次代理分配日志：" ;;
+    zh:menu_groups_task) echo "未授权分组菜单" ;;
+    zh:groups_menu_title) echo "未授权分组菜单" ;;
+    zh:groups_menu_list) echo "查看 active 分组" ;;
+    zh:groups_menu_set_openai) echo "配置 OpenAI 未授权分组" ;;
+    zh:groups_menu_set_anthropic) echo "配置 Anthropic 未授权分组" ;;
+    zh:groups_menu_set_gemini) echo "配置 Gemini 未授权分组" ;;
+    zh:groups_menu_set_antigravity) echo "配置 Antigravity 未授权分组" ;;
+    zh:groups_menu_edit_all) echo "编辑全部未授权分组" ;;
+    zh:groups_config_title) echo "当前未授权分组参数：" ;;
+    zh:groups_list_title) echo "Active 分组列表：" ;;
+    zh:groups_list_empty) echo "没有查到 active 分组。" ;;
+    zh:groups_list_failed) echo "获取分组失败。" ;;
+    zh:label_unauthorized_group_openai) echo "OpenAI 未授权分组 ID" ;;
+    zh:label_unauthorized_group_anthropic) echo "Anthropic 未授权分组 ID" ;;
+    zh:label_unauthorized_group_gemini) echo "Gemini 未授权分组 ID" ;;
+    zh:label_unauthorized_group_antigravity) echo "Antigravity 未授权分组 ID" ;;
     zh:menu_proxy_assign_task) echo "代理分配任务菜单" ;;
     zh:menu_run_proxy_assign) echo "立即执行代理分配一次" ;;
     zh:manual_conflict_prompt) echo "是否停止这些正在执行或排队的自动任务，并继续本次手动执行？[y/N]" ;;
@@ -2229,7 +2350,7 @@ t() {
     zh:full_menu_config) echo "编辑全量任务配置" ;;
     zh:full_menu_enable) echo "启用全量自动任务" ;;
     zh:full_menu_disable) echo "禁用全量自动任务" ;;
-    zh:full_menu_run_all) echo "立即执行一次（全部账号）" ;;
+    zh:full_menu_run_all) echo "立即执行一次（生效 + error 账号）" ;;
     zh:full_menu_run_error) echo "立即执行一次（仅 error 账号）" ;;
     zh:full_menu_run_disabled) echo "立即执行一次（仅 disabled 账号）" ;;
     zh:full_menu_show_log) echo "查看上次全量自动任务日志" ;;
@@ -2241,7 +2362,7 @@ t() {
     zh:global_config_title) echo "当前全局参数：" ;;
     zh:full_config_title) echo "当前全量任务参数：" ;;
     zh:untested_config_title) echo "当前未测任务参数：" ;;
-    zh:menu_run_all) echo "立即执行一次（全部）" ;;
+    zh:menu_run_all) echo "立即执行一次（生效 + error）" ;;
     zh:menu_run_error) echo "仅测试 error 账号" ;;
     zh:menu_run_disabled) echo "仅测试 disabled 账号" ;;
     zh:menu_run_untested) echo "仅测试未测试 active 账号" ;;
@@ -2307,6 +2428,10 @@ show_config() {
   echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}    # 数据库容器名（设置后优先容器查库）"
   echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}    # 管理端 API 基础地址"
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}    # 管理端 API Key"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_OPENAI=${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}    # OpenAI token_expired 未授权分组 ID"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC=${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}    # Anthropic token_expired 未授权分组 ID"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_GEMINI=${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}    # Gemini token_expired 未授权分组 ID"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY=${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}    # Antigravity token_expired 未授权分组 ID"
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
   echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}    # 等待锁最多秒数，0 表示不等待"
@@ -2346,6 +2471,10 @@ show_global_config() {
   echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}"
   echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}"
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_OPENAI=${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC=${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_GEMINI=${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY=${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}"
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}"
   echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}"
@@ -2387,6 +2516,14 @@ show_proxy_assign_task_config() {
   echo "SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}"
   echo "SUB2TEST_PROXY_ASSIGN_MODE=${SUB2TEST_PROXY_ASSIGN_MODE:-index}"
   echo "SUB2TEST_PROXY_ASSIGN_INDEX=${SUB2TEST_PROXY_ASSIGN_INDEX:-1}"
+}
+
+show_groups_task_config() {
+  echo "$(t groups_config_title)"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_OPENAI=${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC=${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_GEMINI=${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY=${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}"
 }
 
 show_duplicates_task_config() {
@@ -2611,6 +2748,10 @@ edit_global_config() {
   edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}" "$(t label_db_container)"
   edit_value SUB2TEST_API_BASE_URL "${SUB2TEST_API_BASE_URL:-http://127.0.0.1:8080/api/v1}" "$(t label_api_base_url)"
   edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}" "$(t label_admin_api_key)"
+  edit_value SUB2TEST_UNAUTHORIZED_GROUP_OPENAI "${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}" "$(t label_unauthorized_group_openai)"
+  edit_value SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC "${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}" "$(t label_unauthorized_group_anthropic)"
+  edit_value SUB2TEST_UNAUTHORIZED_GROUP_GEMINI "${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}" "$(t label_unauthorized_group_gemini)"
+  edit_value SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY "${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}" "$(t label_unauthorized_group_antigravity)"
   edit_value SUB2TEST_ERROR_STREAK_THRESHOLD "${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}" "$(t label_error_threshold)"
   edit_value SUB2TEST_STATE_FILE "${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}" "$(t label_state_file)"
   edit_value SUB2TEST_LOCK_WAIT_SECONDS "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" "$(t label_lock_wait_seconds)"
@@ -2676,6 +2817,110 @@ edit_untested_task_config() {
   echo
   show_untested_task_config
   echo "- $(t untested_task)：$(untested_schedule_summary "${SUB2TEST_UNTESTED_ENABLED:-false}" "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}" "$(t untested_scope)")"
+}
+
+fetch_active_groups() {
+  local groups_failed_msg="$(t groups_list_failed)"
+  local groups_empty_msg="$(t groups_list_empty)"
+  local groups_title_msg="$(t groups_list_title)"
+  export SUB2TEST_GROUPS_FAILED_MSG="$groups_failed_msg" SUB2TEST_GROUPS_EMPTY_MSG="$groups_empty_msg" SUB2TEST_GROUPS_TITLE_MSG="$groups_title_msg"
+  python3 - <<'PY_FETCH_ACTIVE_GROUPS'
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+api_base_url = (os.getenv('SUB2TEST_API_BASE_URL', '') or '').strip().rstrip('/')
+admin_api_key = (os.getenv('SUB2TEST_ADMIN_API_KEY', '') or '').strip()
+timeout_seconds = int((os.getenv('SUB2TEST_TIMEOUT_SECONDS', '30') or '30').strip())
+groups_failed_msg = os.getenv('SUB2TEST_GROUPS_FAILED_MSG', 'Failed to fetch groups.')
+groups_empty_msg = os.getenv('SUB2TEST_GROUPS_EMPTY_MSG', 'No active groups found.')
+groups_title_msg = os.getenv('SUB2TEST_GROUPS_TITLE_MSG', 'Active groups:')
+
+req = urllib.request.Request(
+    f"{api_base_url}/admin/groups/all",
+    headers={
+        'x-api-key': admin_api_key,
+        'Accept': 'application/json',
+    },
+    method='GET',
+)
+
+try:
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+        body = response.read().decode('utf-8', errors='replace')
+except urllib.error.HTTPError as err:
+    detail = err.read().decode('utf-8', errors='replace').strip()
+    print(f"{groups_failed_msg} HTTP {err.code} {detail}", file=sys.stderr)
+    sys.exit(1)
+except Exception as exc:
+    print(f"{groups_failed_msg} {exc}", file=sys.stderr)
+    sys.exit(1)
+
+payload = json.loads(body) if body else {}
+groups = payload.get('data') if isinstance(payload, dict) else payload
+if not isinstance(groups, list):
+    groups = []
+
+active_groups = []
+for item in groups:
+    if not isinstance(item, dict):
+        continue
+    if str(item.get('status') or '').strip().lower() != 'active':
+        continue
+    active_groups.append(item)
+
+if not active_groups:
+    print(groups_empty_msg)
+    sys.exit(0)
+
+print(groups_title_msg)
+for item in active_groups:
+    print(f"- id={item.get('id')} name={item.get('name', '')} platform={item.get('platform', '')} status={item.get('status', '')}")
+PY_FETCH_ACTIVE_GROUPS
+}
+
+edit_groups_task_config() {
+  . "$SUB2TEST_CONFIG_FILE"
+  echo
+  show_groups_task_config
+  echo
+  echo "$(t edit_intro)"
+  echo
+  edit_value SUB2TEST_UNAUTHORIZED_GROUP_OPENAI "${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}" "$(t label_unauthorized_group_openai)"
+  edit_value SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC "${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}" "$(t label_unauthorized_group_anthropic)"
+  edit_value SUB2TEST_UNAUTHORIZED_GROUP_GEMINI "${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}" "$(t label_unauthorized_group_gemini)"
+  edit_value SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY "${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}" "$(t label_unauthorized_group_antigravity)"
+  echo
+  show_groups_task_config
+}
+
+groups_task_menu() {
+  while true; do
+    . "$SUB2TEST_CONFIG_FILE"
+    echo
+    echo "$(t groups_menu_title)"
+    echo
+    echo "1) $(t groups_menu_list)"
+    echo "2) $(t groups_menu_set_openai)"
+    echo "3) $(t groups_menu_set_anthropic)"
+    echo "4) $(t groups_menu_set_gemini)"
+    echo "5) $(t groups_menu_set_antigravity)"
+    echo "6) $(t groups_menu_edit_all)"
+    echo "0) $(t menu_back)"
+    read -r -p "> " choice
+    case "$choice" in
+      1) fetch_active_groups ;;
+      2) edit_value SUB2TEST_UNAUTHORIZED_GROUP_OPENAI "${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}" "$(t label_unauthorized_group_openai)" ;;
+      3) edit_value SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC "${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}" "$(t label_unauthorized_group_anthropic)" ;;
+      4) edit_value SUB2TEST_UNAUTHORIZED_GROUP_GEMINI "${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}" "$(t label_unauthorized_group_gemini)" ;;
+      5) edit_value SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY "${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}" "$(t label_unauthorized_group_antigravity)" ;;
+      6) edit_groups_task_config ;;
+      0) return 0 ;;
+      *) echo "$(t invalid_option)" ;;
+    esac
+  done
 }
 
 duplicates_task_menu() {
@@ -3273,6 +3518,7 @@ run_once() {
   export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
   export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
   export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_ERROR_STREAK_THRESHOLD SUB2TEST_STATE_FILE
+  export SUB2TEST_UNAUTHORIZED_GROUP_OPENAI SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC SUB2TEST_UNAUTHORIZED_GROUP_GEMINI SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY
   export SUB2TEST_CONCURRENCY SUB2TEST_TIMEOUT_SECONDS
   export SUB2TEST_SLEEP_MIN_SECONDS SUB2TEST_SLEEP_MAX_SECONDS
   run_health_check "$mode"
@@ -3572,10 +3818,11 @@ menu() {
     echo "3) $(t menu_untested_task)"
     echo "4) $(t menu_duplicates_task)"
     echo "5) $(t menu_proxy_assign_task)"
-    echo "6) $(t menu_manual_run)"
-    echo "7) $(t menu_show_config)"
-    echo "8) $(t menu_switch_language)"
-    echo "9) $(t menu_uninstall)"
+    echo "6) $(t menu_groups_task)"
+    echo "7) $(t menu_manual_run)"
+    echo "8) $(t menu_show_config)"
+    echo "9) $(t menu_switch_language)"
+    echo "10) $(t menu_uninstall)"
     echo "0) $(t menu_exit)"
     read -r -p "> " choice
     case "$choice" in
@@ -3584,10 +3831,11 @@ menu() {
       3) untested_task_menu ;;
       4) duplicates_task_menu ;;
       5) proxy_assign_task_menu ;;
-      6) manual_run_menu ;;
-      7) show_config ;;
-      8) switch_language ;;
-      9) uninstall_self; exit 0 ;;
+      6) groups_task_menu ;;
+      7) manual_run_menu ;;
+      8) show_config ;;
+      9) switch_language ;;
+      10) uninstall_self; exit 0 ;;
       0) exit 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
