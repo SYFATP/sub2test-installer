@@ -1935,15 +1935,15 @@ def run_account_test(row):
 
     latency_ms = int((time.time() - started) * 1000)
     original_native_status = classify_api_result(http_status, saw_success, error_text)
-    native_status = original_native_status
-
-    if source_status == 'inactive' and original_native_status == 'error':
-        native_status = 'inactive'
-    elif source_status == 'inactive' and original_native_status == 'token_expired':
-        native_status = 'token_expired'
 
     account_state = get_account_state(state, account_id)
-    _, streak_count, disable_needed = should_disable_account(account_state, source_status, native_status, error_streak_threshold)
+    normalized_status = original_native_status
+    if source_status == 'inactive':
+        if original_native_status == 'token_expired':
+            normalized_status = 'token_expired'
+        elif original_native_status != 'success':
+            normalized_status = 'inactive'
+    _, streak_count, disable_needed = should_disable_account(account_state, source_status, normalized_status, error_streak_threshold)
 
     def build_result(**overrides):
         result = {
@@ -1954,9 +1954,9 @@ def run_account_test(row):
             'source_status': source_status,
             'saw_success': saw_success,
             'latency_ms': latency_ms,
-            'native_status': native_status,
+            'native_status': normalized_status,
             'original_native_status': original_native_status,
-            'display_status': native_status,
+            'display_status': normalized_status,
             'detail': shorten_detail(result_text if saw_success else error_text),
             'branch': 'none',
             'writeback': 'skipped',
@@ -1989,7 +1989,7 @@ def run_account_test(row):
         result.update(overrides)
         return result
 
-    if source_status == 'inactive' and native_status == 'success':
+    if source_status == 'inactive' and original_native_status == 'success':
         enable_success, enable_status, enable_detail = enable_account(int(account_id))
         if not enable_success:
             enable_detail = shorten_detail(enable_detail or (f'HTTP {enable_status}' if enable_status else 'enable request failed'))
@@ -2002,7 +2002,7 @@ def run_account_test(row):
             enable_detail=enable_detail,
         )
 
-    if source_status == 'inactive' and native_status == 'token_expired':
+    if source_status == 'inactive' and original_native_status == 'token_expired':
         mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
@@ -2030,7 +2030,7 @@ def run_account_test(row):
             mark_inactive_error_detail=mark_inactive_error_detail,
         )
 
-    if native_status == 'token_expired':
+    if normalized_status == 'token_expired':
         mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
@@ -2043,7 +2043,7 @@ def run_account_test(row):
             mark_token_expired_detail=mark_token_expired_detail,
         )
 
-    if native_status == 'error':
+    if normalized_status == 'error':
         mark_error_success, mark_error_status, mark_error_detail = mark_account_error(int(account_id))
         if not mark_error_success:
             mark_error_detail = shorten_detail(mark_error_detail or (f'HTTP {mark_error_status}' if mark_error_status else 'mark error request failed'))
