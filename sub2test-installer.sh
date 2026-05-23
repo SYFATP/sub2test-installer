@@ -1945,6 +1945,12 @@ def run_account_test(row):
             normalized_status = 'inactive'
     _, streak_count, disable_needed = should_disable_account(account_state, source_status, normalized_status, error_streak_threshold)
 
+    def emit_trace(branch_name: str, writeback: str):
+        print(
+            f"TRACE account={account_id} source_status={source_status} branch={branch_name} "
+            f"normalized_status={normalized_status} original_status={original_native_status} writeback={writeback}"
+        )
+
     def build_result(**overrides):
         result = {
             'account_id': account_id,
@@ -1993,6 +1999,7 @@ def run_account_test(row):
         enable_success, enable_status, enable_detail = enable_account(int(account_id))
         if not enable_success:
             enable_detail = shorten_detail(enable_detail or (f'HTTP {enable_status}' if enable_status else 'enable request failed'))
+        emit_trace('inactive_success', 'success' if enable_success else 'failed')
         return build_result(
             branch='inactive_success',
             writeback='success' if enable_success else 'failed',
@@ -2006,6 +2013,7 @@ def run_account_test(row):
         mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
+        emit_trace('inactive_token_expired', 'success' if mark_token_expired_success else 'failed')
         return build_result(
             branch='inactive_token_expired',
             writeback='success' if mark_token_expired_success else 'failed',
@@ -2020,6 +2028,7 @@ def run_account_test(row):
         mark_inactive_error_success, mark_inactive_error_status, mark_inactive_error_detail = mark_account_inactive_error(int(account_id))
         if not mark_inactive_error_success:
             mark_inactive_error_detail = shorten_detail(mark_inactive_error_detail or (f'HTTP {mark_inactive_error_status}' if mark_inactive_error_status else 'mark inactive request failed'))
+        emit_trace('inactive_error_fallback', 'success' if mark_inactive_error_success else 'failed')
         return build_result(
             branch='inactive_error_fallback',
             writeback='success' if mark_inactive_error_success else 'failed',
@@ -2034,6 +2043,7 @@ def run_account_test(row):
         mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
+        emit_trace('normal_token_expired', 'success' if mark_token_expired_success else 'failed')
         return build_result(
             branch='normal_token_expired',
             writeback='success' if mark_token_expired_success else 'failed',
@@ -2047,6 +2057,7 @@ def run_account_test(row):
         mark_error_success, mark_error_status, mark_error_detail = mark_account_error(int(account_id))
         if not mark_error_success:
             mark_error_detail = shorten_detail(mark_error_detail or (f'HTTP {mark_error_status}' if mark_error_status else 'mark error request failed'))
+        emit_trace('normal_error', 'success' if mark_error_success else 'failed')
         return build_result(
             branch='normal_error',
             writeback='success' if mark_error_success else 'failed',
@@ -2060,6 +2071,7 @@ def run_account_test(row):
         disable_success, disable_status, disable_detail = disable_account(int(account_id))
         if not disable_success:
             disable_detail = shorten_detail(disable_detail or (f'HTTP {disable_status}' if disable_status else 'disable request failed'))
+        emit_trace('disable_threshold', 'success' if disable_success else 'failed')
         return build_result(
             branch='disable_threshold',
             writeback='success' if disable_success else 'failed',
@@ -2069,6 +2081,7 @@ def run_account_test(row):
             disable_detail=disable_detail,
         )
 
+    emit_trace('none', 'skipped')
     return build_result(branch='none', writeback='skipped')
 
 
