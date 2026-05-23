@@ -1752,11 +1752,15 @@ def mark_account_token_expired(account_id: int, platform: str):
     })
 
 
-def keep_account_inactive(account_id: int):
+def mark_account_inactive_error(account_id: int):
     return update_account_fields(account_id, {
         'status': 'inactive',
         'schedulable': False,
     })
+
+
+def keep_account_inactive(account_id: int):
+    return mark_account_inactive_error(account_id)
 
 
 def disable_account(account_id: int):
@@ -1967,7 +1971,7 @@ def run_account_test(row):
                 mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
         else:
             keep_inactive_attempted = True
-            keep_inactive_success, keep_inactive_status, keep_inactive_detail = keep_account_inactive(int(account_id))
+            keep_inactive_success, keep_inactive_status, keep_inactive_detail = mark_account_inactive_error(int(account_id))
             if not keep_inactive_success:
                 keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
     elif native_status == 'token_expired':
@@ -1988,7 +1992,7 @@ def run_account_test(row):
 
     if source_status == 'inactive' and native_status != 'success' and native_status != 'token_expired':
         keep_inactive_attempted = True
-        keep_inactive_success, keep_inactive_status, keep_inactive_detail = keep_account_inactive(int(account_id))
+        keep_inactive_success, keep_inactive_status, keep_inactive_detail = mark_account_inactive_error(int(account_id))
         if not keep_inactive_success:
             keep_inactive_detail = shorten_detail(keep_inactive_detail or (f'HTTP {keep_inactive_status}' if keep_inactive_status else 'keep inactive request failed'))
         mark_error_attempted = False
