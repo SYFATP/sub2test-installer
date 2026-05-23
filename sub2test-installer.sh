@@ -1936,13 +1936,14 @@ def run_account_test(row):
     latency_ms = int((time.time() - started) * 1000)
     original_native_status = classify_api_result(http_status, saw_success, error_text)
     native_status = original_native_status
-    account_state = get_account_state(state, account_id)
-    _, streak_count, disable_needed = should_disable_account(account_state, source_status, native_status, error_streak_threshold)
 
     if source_status == 'inactive' and native_status == 'error':
         native_status = 'inactive'
     elif source_status == 'inactive' and native_status == 'token_expired':
         native_status = 'token_expired'
+
+    account_state = get_account_state(state, account_id)
+    _, streak_count, disable_needed = should_disable_account(account_state, source_status, native_status, error_streak_threshold)
 
     def build_result(**overrides):
         result = {
