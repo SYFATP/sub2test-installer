@@ -1599,7 +1599,7 @@ def mark_account_error(account_id: int):
 
 def mark_account_token_expired(account_id: int):
     return update_account_fields(account_id, {
-        'status': 'inactive',
+        'status': 'active',
         'schedulable': False,
     })
 
@@ -1814,7 +1814,7 @@ def run_account_test(row):
         mark_token_expired_success, mark_token_expired_status, mark_token_expired_detail = mark_account_token_expired(int(account_id))
         if not mark_token_expired_success:
             mark_token_expired_detail = shorten_detail(mark_token_expired_detail or (f'HTTP {mark_token_expired_status}' if mark_token_expired_status else 'mark token_expired request failed'))
-    elif source_status == 'active' and native_status == 'error':
+    elif native_status == 'error':
         mark_error_attempted = True
         mark_error_success, mark_error_status, mark_error_detail = mark_account_error(int(account_id))
         if not mark_error_success:
@@ -1870,6 +1870,8 @@ for batch_start in range(0, len(rows), batch_size):
         processed_account_ids.add(item['account_id'])
         account_state = get_account_state(state, item['account_id'])
         apply_account_state(account_state, item['native_status'], item['streak_count'], item['disable_success'], item['enable_success'])
+        if item['mark_error_success']:
+            account_state['last_native_status'] = 'error'
         result = 'success' if item['saw_success'] else 'failed'
         display_name = (item['name'] or '').strip() or f"account-{item['account_id']}"
         try:
