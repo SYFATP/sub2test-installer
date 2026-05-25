@@ -2023,16 +2023,6 @@ def run_account_test(row):
             mark_token_expired_detail=mark_token_expired_detail,
         )
 
-    if normalized_status == 'error':
-        mark_error_success, _, mark_error_detail = mark_account_error(int(account_id))
-        if not mark_error_success:
-            mark_error_detail = shorten_detail(mark_error_detail or 'mark error request failed')
-        return build_result(
-            mark_error_attempted=True,
-            mark_error_success=mark_error_success,
-            mark_error_detail=mark_error_detail,
-        )
-
     if disable_needed:
         disable_success, _, disable_detail = disable_account(int(account_id))
         if not disable_success:
@@ -2041,6 +2031,16 @@ def run_account_test(row):
             disable_attempted=True,
             disable_success=disable_success,
             disable_detail=disable_detail,
+        )
+
+    if normalized_status == 'error':
+        mark_error_success, _, mark_error_detail = mark_account_error(int(account_id))
+        if not mark_error_success:
+            mark_error_detail = shorten_detail(mark_error_detail or 'mark error request failed')
+        return build_result(
+            mark_error_attempted=True,
+            mark_error_success=mark_error_success,
+            mark_error_detail=mark_error_detail,
         )
 
     return build_result()
