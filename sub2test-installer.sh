@@ -1087,7 +1087,7 @@ if selected_proxy_id is None:
 for row in accounts:
     account_id = int(row.get('id'))
     current_proxy_id = row.get('proxy_id')
-    if current_proxy_id not in (None, ''):
+    if current_proxy_id is not None and current_proxy_id != '':
         skipped_existing += 1
         print(f'proxy_assign_skip account={account_id} reason=existing_proxy proxy_id={current_proxy_id}')
         continue
