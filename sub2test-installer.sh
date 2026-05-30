@@ -169,6 +169,8 @@ SUB2TEST_DB_CONTAINER={keep("SUB2TEST_DB_CONTAINER", "")}
 SUB2TEST_API_BASE_URL={keep("SUB2TEST_API_BASE_URL", "")}
 # 管理端 x-api-key，用于调用 /admin/accounts/{{id}}/test
 SUB2TEST_ADMIN_API_KEY={keep("SUB2TEST_ADMIN_API_KEY", "")}
+# 测活指定模型；留空表示使用后端默认模型
+SUB2TEST_TEST_MODEL_ID={keep("SUB2TEST_TEST_MODEL_ID", "")}
 # OpenAI 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
 SUB2TEST_UNAUTHORIZED_GROUP_OPENAI={keep("SUB2TEST_UNAUTHORIZED_GROUP_OPENAI", "")}
 # Anthropic 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
@@ -1881,7 +1883,11 @@ def run_account_test(row):
     error_text = ''
 
     try:
-        body = json.dumps({}).encode('utf-8')
+        request_body = {}
+        test_model_id = get_env('SUB2TEST_TEST_MODEL_ID')
+        if test_model_id:
+            request_body['model_id'] = test_model_id
+        body = json.dumps(request_body, ensure_ascii=False).encode('utf-8')
         req = urllib.request.Request(
             f"{get_env('SUB2TEST_API_BASE_URL').rstrip('/')}/admin/accounts/{account_id}/test",
             data=body,
@@ -2307,6 +2313,7 @@ t() {
     en:label_db_container) echo "Database container name (prefer container query when set)" ;;
     en:label_api_base_url) echo "Admin API base URL" ;;
     en:label_admin_api_key) echo "Admin API key" ;;
+    en:label_test_model_id) echo "Health-check model ID (leave blank for backend default)" ;;
     en:label_error_threshold) echo "Disable after this many consecutive errors" ;;
     en:label_state_file) echo "Local state file path" ;;
     en:label_lock_wait_seconds) echo "Shared lock wait seconds (0 means fail immediately)" ;;
@@ -2481,6 +2488,7 @@ t() {
     zh:label_db_container) echo "数据库容器名（设置后优先走容器查库）" ;;
     zh:label_api_base_url) echo "管理端 API 地址" ;;
     zh:label_admin_api_key) echo "管理端 API Key" ;;
+    zh:label_test_model_id) echo "测活指定模型 ID（留空使用后端默认模型）" ;;
     zh:label_error_threshold) echo "连续报错多少次后停用账号" ;;
     zh:label_state_file) echo "本地状态文件路径" ;;
     zh:label_lock_wait_seconds) echo "等待锁最多多少秒（0 表示不等待）" ;;
@@ -2519,6 +2527,7 @@ show_config() {
   echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}    # 数据库容器名（设置后优先容器查库）"
   echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}    # 管理端 API 基础地址"
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}    # 管理端 API Key"
+  echo "SUB2TEST_TEST_MODEL_ID=${SUB2TEST_TEST_MODEL_ID:-}    # 测活指定模型，留空使用后端默认模型"
   echo "SUB2TEST_UNAUTHORIZED_GROUP_OPENAI=${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}    # OpenAI token_expired 未授权分组 ID"
   echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC=${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}    # Anthropic token_expired 未授权分组 ID"
   echo "SUB2TEST_UNAUTHORIZED_GROUP_GEMINI=${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}    # Gemini token_expired 未授权分组 ID"
@@ -2562,6 +2571,7 @@ show_global_config() {
   echo "SUB2TEST_DB_CONTAINER=${SUB2TEST_DB_CONTAINER:-}"
   echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}"
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}"
+  echo "SUB2TEST_TEST_MODEL_ID=${SUB2TEST_TEST_MODEL_ID:-}"
   echo "SUB2TEST_UNAUTHORIZED_GROUP_OPENAI=${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}"
   echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC=${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}"
   echo "SUB2TEST_UNAUTHORIZED_GROUP_GEMINI=${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}"
@@ -2839,6 +2849,7 @@ edit_global_config() {
   edit_value SUB2TEST_DB_CONTAINER "${SUB2TEST_DB_CONTAINER:-}" "$(t label_db_container)"
   edit_value SUB2TEST_API_BASE_URL "${SUB2TEST_API_BASE_URL:-http://127.0.0.1:8080/api/v1}" "$(t label_api_base_url)"
   edit_value SUB2TEST_ADMIN_API_KEY "${SUB2TEST_ADMIN_API_KEY:-}" "$(t label_admin_api_key)"
+  edit_value SUB2TEST_TEST_MODEL_ID "${SUB2TEST_TEST_MODEL_ID:-}" "$(t label_test_model_id)"
   edit_value SUB2TEST_UNAUTHORIZED_GROUP_OPENAI "${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}" "$(t label_unauthorized_group_openai)"
   edit_value SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC "${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}" "$(t label_unauthorized_group_anthropic)"
   edit_value SUB2TEST_UNAUTHORIZED_GROUP_GEMINI "${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}" "$(t label_unauthorized_group_gemini)"
@@ -3610,7 +3621,7 @@ run_once() {
   esac
   export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
   export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
-  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_ERROR_STREAK_THRESHOLD SUB2TEST_STATE_FILE
+  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_TEST_MODEL_ID SUB2TEST_ERROR_STREAK_THRESHOLD SUB2TEST_STATE_FILE
   export SUB2TEST_UNAUTHORIZED_GROUP_OPENAI SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC SUB2TEST_UNAUTHORIZED_GROUP_GEMINI SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY
   export SUB2TEST_CONCURRENCY SUB2TEST_TIMEOUT_SECONDS
   export SUB2TEST_SLEEP_MIN_SECONDS SUB2TEST_SLEEP_MAX_SECONDS
