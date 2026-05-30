@@ -1263,25 +1263,19 @@ def update_account_fields(account_id: int, payload: dict):
     return False, None, 'update request failed'
 
 
-def detect_note_field() -> str | None:
-    if not rows:
-        return None
-    sample_id = int(rows[0]['id'])
-    unknown_markers = ('unknown field', 'unknown_fields', 'extra fields', 'not allowed', 'unrecognized')
-    for field_name in ('note', 'remarks', 'remark', 'comment', 'description'):
-        success, status_code, detail = update_account_fields(sample_id, {field_name: '账号重复'})
-        detail_lower = (detail or '').lower()
-        if success:
-            rollback_success, rollback_status, rollback_detail = update_account_fields(sample_id, {field_name: ''})
-            if rollback_success:
-                print(f'duplicate_note_field field={field_name}')
-                return field_name
-            print(f'duplicate_note_field field={field_name} rollback_failed status={rollback_status or "unknown"} detail={shorten_detail(rollback_detail)}')
-            return field_name
-        if status_code in (400, 422) and any(marker in detail_lower for marker in unknown_markers):
-            continue
-    print('duplicate_note_field field=none')
-    return None
+def delete_account(account_id: int):
+    req = urllib.request.Request(
+        f'{api_base_url}/admin/accounts/{account_id}',
+        headers=headers,
+        method='DELETE',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+            return True, getattr(response, 'status', None) or response.getcode(), ''
+    except urllib.error.HTTPError as err:
+        return False, err.code, response_error_detail(err.code, err.read())
+    except Exception as exc:
+        return False, None, safe_exception_text(exc)
 
 
 def is_active_account(row: dict) -> bool:
@@ -1303,11 +1297,6 @@ for row in rows:
 def duplicate_sort_key(item: dict):
     return (0 if is_active_account(item) else 1, int(item.get('id', 0)))
 
-duplicate_groups = []
-for name in sorted(groups):
-    members = sorted(groups[name], key=duplicate_sort_key)
-    if len(members) > 1:
-        duplicate_groups.append((name, members))
 
 def choose_keep_account(members):
     active_members = [item for item in members if is_active_account(item)]
@@ -1316,29 +1305,30 @@ def choose_keep_account(members):
     return min(members, key=lambda item: int(item.get('id', 0)))
 
 
-note_field = detect_note_field() if duplicate_groups else None
-note_value = '账号重复'
-disabled_count = 0
+duplicate_groups = []
+for name in sorted(groups):
+    members = sorted(groups[name], key=duplicate_sort_key)
+    if len(members) > 1:
+        duplicate_groups.append((name, members))
+
+deleted_count = 0
 failed_count = 0
 
 for name, members in duplicate_groups:
     keep = choose_keep_account(members)
-    disable_members = [item for item in members if int(item['id']) != int(keep['id'])]
-    disable_ids = ','.join(str(int(item['id'])) for item in disable_members)
-    print(f'duplicate name={name} keep_id={int(keep["id"])} disable_ids={disable_ids}')
-    for item in disable_members:
-        payload = {'status': 'inactive'}
-        if note_field:
-            payload[note_field] = note_value
-        success, status_code, detail = update_account_fields(int(item['id']), payload)
+    delete_members = [item for item in members if int(item['id']) != int(keep['id'])]
+    delete_ids = ','.join(str(int(item['id'])) for item in delete_members)
+    print(f'duplicate name={name} keep_id={int(keep["id"])} delete_ids={delete_ids}')
+    for item in delete_members:
+        success, status_code, detail = delete_account(int(item['id']))
         if success:
-            disabled_count += 1
-            print(f'duplicate_disable id={int(item["id"])} status=success note={(note_value if note_field else "none")}')
+            deleted_count += 1
+            print(f'duplicate_delete id={int(item["id"])} status=success')
         else:
             failed_count += 1
-            print(f'duplicate_disable id={int(item["id"])} status=failed http_status={status_code or "unknown"} detail={shorten_detail(detail)}')
+            print(f'duplicate_delete id={int(item["id"])} status=failed http_status={status_code or "unknown"} detail={shorten_detail(detail)}')
 
-print(f'duplicate_summary groups={len(duplicate_groups)} disabled={disabled_count} failed={failed_count} retention=active_first_id_asc note_field={note_field or "none"}')
+print(f'duplicate_summary groups={len(duplicate_groups)} deleted={deleted_count} failed={failed_count} retention=active_first_id_asc')
 PY_RUN_DUPLICATE_CHECK
 }
 
