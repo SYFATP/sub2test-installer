@@ -1120,7 +1120,7 @@ run_duplicate_check() {
     docker exec \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
-      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), status FROM accounts WHERE deleted_at IS NULL ORDER BY name ASC, id ASC" > "$rows_tsv"
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" -F $'\t' -Atqc "SELECT id, COALESCE(name, ''), status, schedulable FROM accounts WHERE deleted_at IS NULL ORDER BY name ASC, id ASC" > "$rows_tsv"
     python3 - "$rows_tsv" "$rows_json" <<'PY_EXPORT_CONTAINER_DUPLICATES'
 import json
 import sys
@@ -1133,14 +1133,15 @@ with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', enco
         line = raw_line.rstrip('\\n')
         if not line:
             continue
-        parts = line.split('\t', 2)
-        if len(parts) != 3:
+        parts = line.split('\t', 3)
+        if len(parts) != 4:
             continue
-        account_id, name, status = parts
+        account_id, name, status, schedulable = parts
         out.write(json.dumps({
             'id': int(account_id),
             'name': name,
             'status': status,
+            'schedulable': schedulable,
         }, ensure_ascii=False) + '\n')
 PY_EXPORT_CONTAINER_DUPLICATES
   else
@@ -1164,7 +1165,7 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 cur.execute(
     """
-    SELECT id, COALESCE(name, ''), status
+    SELECT id, COALESCE(name, ''), status, schedulable
     FROM accounts
     WHERE deleted_at IS NULL
     ORDER BY name ASC, id ASC
@@ -1175,11 +1176,12 @@ cur.close()
 conn.close()
 
 with open(output_path, 'w', encoding='utf-8') as fh:
-    for account_id, name, status in rows:
+    for account_id, name, status, schedulable in rows:
         fh.write(json.dumps({
             'id': account_id,
             'name': name or '',
             'status': status,
+            'schedulable': schedulable,
         }, ensure_ascii=False) + '\n')
 PY_EXPORT_DUPLICATES
   fi
@@ -1199,7 +1201,6 @@ except Exception:
     pass
 
 rows_path = sys.argv[1]
-skip_inactive = (os.getenv('SUB2TEST_DUPLICATES_SKIP_INACTIVE', 'true') or 'true').strip().lower() == 'true'
 api_base_url = (os.getenv('SUB2TEST_API_BASE_URL', '') or '').strip().rstrip('/')
 admin_api_key = (os.getenv('SUB2TEST_ADMIN_API_KEY', '') or '').strip()
 timeout_seconds = int((os.getenv('SUB2TEST_TIMEOUT_SECONDS', '30') or '30').strip())
@@ -1283,20 +1284,37 @@ def detect_note_field() -> str | None:
     return None
 
 
+def is_active_account(row: dict) -> bool:
+    if (row.get('status') or '').strip().lower() != 'active':
+        return False
+    value = row.get('schedulable')
+    if isinstance(value, bool):
+        return value
+    return str(value or '').strip().lower() in ('true', 't', '1', 'yes', 'y')
+
+
 groups = defaultdict(list)
 for row in rows:
     name = (row.get('name') or '').strip()
     if not name:
         continue
-    if skip_inactive and (row.get('status') or '').strip() == 'inactive':
-        continue
     groups[name].append(row)
+
+def duplicate_sort_key(item: dict):
+    return (0 if is_active_account(item) else 1, int(item.get('id', 0)))
 
 duplicate_groups = []
 for name in sorted(groups):
-    members = sorted(groups[name], key=lambda item: int(item.get('id', 0)))
+    members = sorted(groups[name], key=duplicate_sort_key)
     if len(members) > 1:
         duplicate_groups.append((name, members))
+
+def choose_keep_account(members):
+    active_members = [item for item in members if is_active_account(item)]
+    if active_members:
+        return min(active_members, key=lambda item: int(item.get('id', 0)))
+    return min(members, key=lambda item: int(item.get('id', 0)))
+
 
 note_field = detect_note_field() if duplicate_groups else None
 note_value = '账号重复'
@@ -1304,8 +1322,8 @@ disabled_count = 0
 failed_count = 0
 
 for name, members in duplicate_groups:
-    keep = members[0]
-    disable_members = members[1:]
+    keep = choose_keep_account(members)
+    disable_members = [item for item in members if int(item['id']) != int(keep['id'])]
     disable_ids = ','.join(str(int(item['id'])) for item in disable_members)
     print(f'duplicate name={name} keep_id={int(keep["id"])} disable_ids={disable_ids}')
     for item in disable_members:
@@ -1320,7 +1338,7 @@ for name, members in duplicate_groups:
             failed_count += 1
             print(f'duplicate_disable id={int(item["id"])} status=failed http_status={status_code or "unknown"} detail={shorten_detail(detail)}')
 
-print(f'duplicate_summary groups={len(duplicate_groups)} disabled={disabled_count} failed={failed_count} skip_inactive={str(skip_inactive).lower()} note_field={note_field or "none"}')
+print(f'duplicate_summary groups={len(duplicate_groups)} disabled={disabled_count} failed={failed_count} retention=active_first_id_asc note_field={note_field or "none"}')
 PY_RUN_DUPLICATE_CHECK
 }
 
@@ -2253,6 +2271,7 @@ t() {
     en:duplicates_menu_config) echo "Edit duplicate-account config" ;;
     en:duplicates_menu_enable) echo "Enable duplicate-account task" ;;
     en:duplicates_menu_disable) echo "Disable duplicate-account task" ;;
+    en:duplicates_menu_run) echo "Run once now" ;;
     en:duplicates_menu_show_log) echo "Show last duplicate-account log" ;;
     en:duplicates_config_title) echo "Current duplicate-account task parameters:" ;;
     en:duplicates_task) echo "Duplicate-account check" ;;
@@ -2428,6 +2447,7 @@ t() {
     zh:duplicates_menu_config) echo "编辑重复账号任务配置" ;;
     zh:duplicates_menu_enable) echo "启用重复账号排查任务" ;;
     zh:duplicates_menu_disable) echo "禁用重复账号排查任务" ;;
+    zh:duplicates_menu_run) echo "立即执行一次" ;;
     zh:duplicates_menu_show_log) echo "查看上次重复账号排查日志" ;;
     zh:duplicates_config_title) echo "当前重复账号任务参数：" ;;
     zh:duplicates_task) echo "重复账号排查" ;;
@@ -3037,14 +3057,16 @@ duplicates_task_menu() {
     echo "1) $(t duplicates_menu_config)"
     echo "2) $(t duplicates_menu_enable)"
     echo "3) $(t duplicates_menu_disable)"
-    echo "4) $(t duplicates_menu_show_log)"
+    echo "4) $(t duplicates_menu_run)"
+    echo "5) $(t duplicates_menu_show_log)"
     echo "0) $(t menu_back)"
     read -r -p "> " choice
     case "$choice" in
       1) edit_duplicates_task_config ;;
       2) enable_duplicates_task ;;
       3) disable_duplicates_task ;;
-      4) show_last_duplicates_log ;;
+      4) run_duplicates_manual_once ;;
+      5) show_last_duplicates_log ;;
       0) return 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
@@ -3898,6 +3920,14 @@ run_proxy_assign_now() {
   export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_TIMEOUT_SECONDS
   export SUB2TEST_PROXY_ASSIGN_MODE SUB2TEST_PROXY_ASSIGN_INDEX
   run_proxy_assign
+}
+
+run_duplicates_manual_once() {
+  echo "$(t manual_lock_starting)"
+  if ! /usr/bin/flock -w "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" /opt/sub2test/duplicates.lock "$SCRIPT_PATH" run-duplicates; then
+    echo "$(t manual_lock_failed)"
+    return 1
+  fi
 }
 
 run_duplicates_once() {
