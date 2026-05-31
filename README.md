@@ -1,6 +1,6 @@
 # sub2test-installer
 
-Current release: `0.1.6`
+Current release: `0.1.8`
 
 - [中文](#中文)
 - [English](#english)
@@ -9,9 +9,19 @@ Current release: `0.1.6`
 
 ## 中文
 
-`sub2test-installer.sh` 当前发布版本为 `0.1.6`。
+`sub2test-installer.sh` 当前发布版本为 `0.1.8`。
 
 `sub2test-installer.sh` 用来给 Sub2API 部署一套独立的 `sub2test` 运行环境：自动发现数据库配置、调用管理端账号测活接口、把连续 `error` 的账号在达到阈值后自动设为 `disabled`，并可通过 systemd timer 定时执行。
+
+### 本版更新
+
+- `inactive` 测活失败保持 `inactive`
+- `token_expired` 自动追加平台对应未授权分组
+- 重复账号排查支持手动执行
+- 重复账号保留策略改为优先生效账号中 `id` 最小的账号
+- 重复账号排查改为删除多余重复账号
+- 未测 / 重复账号 / 代理分配周期任务改为更稳定的 hourly timer
+- 支持为测活指定 `model_id`
 
 ### 30 秒快速开始
 
@@ -57,9 +67,19 @@ sudo sub2test run-proxy-assign-now
 
 ## English
 
-Current `sub2test-installer.sh` release: `0.1.6`.
+Current `sub2test-installer.sh` release: `0.1.8`.
 
 `sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
+
+### Release notes
+
+- `inactive` accounts stay `inactive` when health checks fail
+- `token_expired` adds the configured unauthorized group for the platform
+- Duplicate-account checking now supports manual execution
+- Duplicate retention now prefers the smallest `id` among active accounts
+- Duplicate-account checking now deletes duplicate accounts instead of disabling them
+- Untested / duplicate / proxy-assignment periodic tasks now use stable hourly timers
+- Health checks can now send a configured `model_id`
 
 ### Quick start in 30 seconds
 
@@ -173,9 +193,19 @@ Notes:
 
 ## English
 
-Current `sub2test-installer.sh` release: `0.1.6`.
+Current `sub2test-installer.sh` release: `0.1.8`.
 
 `sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
+
+### Release notes
+
+- `inactive` accounts stay `inactive` when health checks fail
+- `token_expired` adds the configured unauthorized group for the platform
+- Duplicate-account checking now supports manual execution
+- Duplicate retention now prefers the smallest `id` among active accounts
+- Duplicate-account checking now deletes duplicate accounts instead of disabling them
+- Untested / duplicate / proxy-assignment periodic tasks now use stable hourly timers
+- Health checks can now send a configured `model_id`
 
 ### Quick start in 30 seconds
 
