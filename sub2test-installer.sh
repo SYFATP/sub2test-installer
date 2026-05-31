@@ -461,9 +461,7 @@ render_untested_timer() {
 Description=Run sub2test for untested active accounts periodically
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "untested every-minutes")min
-AccuracySec=1s
+OnCalendar=*:0/$(systemd_minutes_calendar_for "${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}" "untested every-minutes")
 Persistent=true
 RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}")
 Unit=sub2test-untested.service
@@ -479,9 +477,7 @@ render_duplicates_timer() {
 Description=Run sub2test duplicate-account check periodically
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "duplicates every-minutes")min
-AccuracySec=1s
+OnCalendar=*:0/$(systemd_minutes_calendar_for "${SUB2TEST_DUPLICATES_EVERY_MINUTES:-60}" "duplicates every-minutes")
 Persistent=true
 RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_DUPLICATES_RANDOMIZED_DELAY_SECONDS:-120}")
 Unit=sub2test-duplicates.service
@@ -775,9 +771,7 @@ render_proxy_assign_timer() {
 Description=Run sub2test proxy assignment periodically
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=$(systemd_minutes_calendar_for "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "proxy-assign every-minutes")min
-AccuracySec=1s
+OnCalendar=*:0/$(systemd_minutes_calendar_for "${SUB2TEST_PROXY_ASSIGN_EVERY_MINUTES:-60}" "proxy-assign every-minutes")
 Persistent=true
 RandomizedDelaySec=$(systemd_randomized_delay_for "${SUB2TEST_PROXY_ASSIGN_RANDOMIZED_DELAY_SECONDS:-120}")
 Unit=sub2test-proxy-assign.service
@@ -4083,9 +4077,7 @@ cat > /etc/systemd/system/sub2test-proxy-assign.timer <<'EOF'
 Description=Run sub2test proxy assignment periodically
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=60min
-AccuracySec=1s
+OnCalendar=*:0/60
 Persistent=true
 RandomizedDelaySec=120
 Unit=sub2test-proxy-assign.service
