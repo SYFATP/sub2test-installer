@@ -171,13 +171,13 @@ SUB2TEST_API_BASE_URL={keep("SUB2TEST_API_BASE_URL", "")}
 SUB2TEST_ADMIN_API_KEY={keep("SUB2TEST_ADMIN_API_KEY", "")}
 # 测活指定模型；留空表示使用后端默认模型
 SUB2TEST_TEST_MODEL_ID={keep("SUB2TEST_TEST_MODEL_ID", "")}
-# OpenAI 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
+# OpenAI 平台 token_expired 后追加的不测活分组 ID；留空表示不追加分组
 SUB2TEST_UNAUTHORIZED_GROUP_OPENAI={keep("SUB2TEST_UNAUTHORIZED_GROUP_OPENAI", "")}
-# Anthropic 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
+# Anthropic 平台 token_expired 后追加的不测活分组 ID；留空表示不追加分组
 SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC={keep("SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC", "")}
-# Gemini 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
+# Gemini 平台 token_expired 后追加的不测活分组 ID；留空表示不追加分组
 SUB2TEST_UNAUTHORIZED_GROUP_GEMINI={keep("SUB2TEST_UNAUTHORIZED_GROUP_GEMINI", "")}
-# Antigravity 平台 token_expired 后追加的未授权分组 ID；留空表示不追加分组
+# Antigravity 平台 token_expired 后追加的不测活分组 ID；留空表示不追加分组
 SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY={keep("SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY", "")}
 # 连续 error 达到该次数后自动停用账号
 SUB2TEST_ERROR_STREAK_THRESHOLD={keep("SUB2TEST_ERROR_STREAK_THRESHOLD", "3")}
@@ -1949,9 +1949,9 @@ def run_account_test(row):
     account_state = get_account_state(state, account_id)
     normalized_status = original_native_status
     if source_status == 'inactive':
-        if original_native_status == 'token_expired':
-            normalized_status = 'token_expired'
-        elif original_native_status != 'success':
+        if original_native_status == 'success':
+            normalized_status = 'success'
+        else:
             normalized_status = 'inactive'
     _, streak_count, disable_needed = should_disable_account(account_state, source_status, normalized_status, error_streak_threshold)
 
@@ -1997,17 +1997,6 @@ def run_account_test(row):
             enable_attempted=True,
             enable_success=enable_success,
             enable_detail=enable_detail,
-        )
-
-    if inactive_source and original_native_status == 'token_expired':
-        mark_token_expired_success, _, mark_token_expired_detail = mark_account_token_expired(int(account_id), platform)
-        if not mark_token_expired_success:
-            mark_token_expired_detail = shorten_detail(mark_token_expired_detail or 'mark token_expired request failed')
-        return build_result(
-            display_status='token_expired',
-            mark_token_expired_attempted=True,
-            mark_token_expired_success=mark_token_expired_success,
-            mark_token_expired_detail=mark_token_expired_detail,
         )
 
     if inactive_source:
@@ -2225,22 +2214,22 @@ t() {
     en:label_proxy_assign_mode) echo "Proxy-assignment mode (index/random)" ;;
     en:label_proxy_assign_index) echo "Proxy-assignment index (1-based for index mode)" ;;
     en:last_proxy_assign_log_title) echo "Last proxy-assignment log:" ;;
-    en:menu_groups_task) echo "Unauthorized-group menu" ;;
-    en:groups_menu_title) echo "Unauthorized-group menu" ;;
+    en:menu_groups_task) echo "No-test-group menu" ;;
+    en:groups_menu_title) echo "No-test-group menu" ;;
     en:groups_menu_list) echo "List active groups" ;;
-    en:groups_menu_set_openai) echo "Set OpenAI unauthorized group" ;;
-    en:groups_menu_set_anthropic) echo "Set Anthropic unauthorized group" ;;
-    en:groups_menu_set_gemini) echo "Set Gemini unauthorized group" ;;
-    en:groups_menu_set_antigravity) echo "Set Antigravity unauthorized group" ;;
-    en:groups_menu_edit_all) echo "Edit all unauthorized groups" ;;
-    en:groups_config_title) echo "Current unauthorized-group parameters:" ;;
+    en:groups_menu_set_openai) echo "Set OpenAI no-test group" ;;
+    en:groups_menu_set_anthropic) echo "Set Anthropic no-test group" ;;
+    en:groups_menu_set_gemini) echo "Set Gemini no-test group" ;;
+    en:groups_menu_set_antigravity) echo "Set Antigravity no-test group" ;;
+    en:groups_menu_edit_all) echo "Edit all no-test groups" ;;
+    en:groups_config_title) echo "Current no-test-group parameters:" ;;
     en:groups_list_title) echo "Active groups:" ;;
     en:groups_list_empty) echo "No active groups found." ;;
     en:groups_list_failed) echo "Failed to fetch groups." ;;
-    en:label_unauthorized_group_openai) echo "OpenAI unauthorized group ID" ;;
-    en:label_unauthorized_group_anthropic) echo "Anthropic unauthorized group ID" ;;
-    en:label_unauthorized_group_gemini) echo "Gemini unauthorized group ID" ;;
-    en:label_unauthorized_group_antigravity) echo "Antigravity unauthorized group ID" ;;
+    en:label_unauthorized_group_openai) echo "OpenAI no-test group ID" ;;
+    en:label_unauthorized_group_anthropic) echo "Anthropic no-test group ID" ;;
+    en:label_unauthorized_group_gemini) echo "Gemini no-test group ID" ;;
+    en:label_unauthorized_group_antigravity) echo "Antigravity no-test group ID" ;;
     en:manual_conflict_prompt) echo "Stop the running or queued automatic task(s) and continue with this manual run? [y/N]" ;;
     en:manual_conflict_cancelled) echo "Manual run cancelled." ;;
     en:manual_conflict_stopping) echo "Stopping automatic task(s)..." ;;
@@ -2355,7 +2344,7 @@ t() {
     zh:enabled_hourly) echo "已启用：每小时自动执行一次%s" ;;
     zh:enabled_weekly) echo "已启用：每周自动执行一次%s" ;;
     zh:enabled_daily_fallback) echo "已启用：每天自动执行一次%s" ;;
-    zh:config_intro) echo "当前自动任务说明（本版更新：inactive 测活失败保持 inactive，token_expired 追加未授权分组）：" ;;
+    zh:config_intro) echo "当前自动任务说明：" ;;
     zh:runtime_overview_title) echo "运行概览：" ;;
     zh:runtime_status_label) echo "当前状态" ;;
     zh:runtime_last_run_label) echo "上次执行时间" ;;
@@ -2399,22 +2388,22 @@ t() {
     zh:label_proxy_assign_mode) echo "代理分配模式（index/random）" ;;
     zh:label_proxy_assign_index) echo "代理分配序号（index 模式从 1 开始）" ;;
     zh:last_proxy_assign_log_title) echo "上次代理分配日志：" ;;
-    zh:menu_groups_task) echo "未授权分组菜单" ;;
-    zh:groups_menu_title) echo "未授权分组菜单" ;;
+    zh:menu_groups_task) echo "不测活分组菜单" ;;
+    zh:groups_menu_title) echo "不测活分组菜单" ;;
     zh:groups_menu_list) echo "查看 active 分组" ;;
-    zh:groups_menu_set_openai) echo "配置 OpenAI 未授权分组" ;;
-    zh:groups_menu_set_anthropic) echo "配置 Anthropic 未授权分组" ;;
-    zh:groups_menu_set_gemini) echo "配置 Gemini 未授权分组" ;;
-    zh:groups_menu_set_antigravity) echo "配置 Antigravity 未授权分组" ;;
-    zh:groups_menu_edit_all) echo "编辑全部未授权分组" ;;
-    zh:groups_config_title) echo "当前未授权分组参数：" ;;
+    zh:groups_menu_set_openai) echo "配置 OpenAI 不测活分组" ;;
+    zh:groups_menu_set_anthropic) echo "配置 Anthropic 不测活分组" ;;
+    zh:groups_menu_set_gemini) echo "配置 Gemini 不测活分组" ;;
+    zh:groups_menu_set_antigravity) echo "配置 Antigravity 不测活分组" ;;
+    zh:groups_menu_edit_all) echo "编辑全部不测活分组" ;;
+    zh:groups_config_title) echo "当前不测活分组参数：" ;;
     zh:groups_list_title) echo "Active 分组列表：" ;;
     zh:groups_list_empty) echo "没有查到 active 分组。" ;;
     zh:groups_list_failed) echo "获取分组失败。" ;;
-    zh:label_unauthorized_group_openai) echo "OpenAI 未授权分组 ID" ;;
-    zh:label_unauthorized_group_anthropic) echo "Anthropic 未授权分组 ID" ;;
-    zh:label_unauthorized_group_gemini) echo "Gemini 未授权分组 ID" ;;
-    zh:label_unauthorized_group_antigravity) echo "Antigravity 未授权分组 ID" ;;
+    zh:label_unauthorized_group_openai) echo "OpenAI 不测活分组 ID" ;;
+    zh:label_unauthorized_group_anthropic) echo "Anthropic 不测活分组 ID" ;;
+    zh:label_unauthorized_group_gemini) echo "Gemini 不测活分组 ID" ;;
+    zh:label_unauthorized_group_antigravity) echo "Antigravity 不测活分组 ID" ;;
     zh:menu_proxy_assign_task) echo "代理分配任务菜单" ;;
     zh:menu_run_proxy_assign) echo "立即执行代理分配一次" ;;
     zh:manual_conflict_prompt) echo "是否停止这些正在执行或排队的自动任务，并继续本次手动执行？[y/N]" ;;
@@ -2532,10 +2521,10 @@ show_config() {
   echo "SUB2TEST_API_BASE_URL=${SUB2TEST_API_BASE_URL:-}    # 管理端 API 基础地址"
   echo "SUB2TEST_ADMIN_API_KEY=${SUB2TEST_ADMIN_API_KEY:+***set***}    # 管理端 API Key"
   echo "SUB2TEST_TEST_MODEL_ID=${SUB2TEST_TEST_MODEL_ID:-}    # 测活指定模型，留空使用后端默认模型"
-  echo "SUB2TEST_UNAUTHORIZED_GROUP_OPENAI=${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}    # OpenAI token_expired 未授权分组 ID"
-  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC=${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}    # Anthropic token_expired 未授权分组 ID"
-  echo "SUB2TEST_UNAUTHORIZED_GROUP_GEMINI=${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}    # Gemini token_expired 未授权分组 ID"
-  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY=${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}    # Antigravity token_expired 未授权分组 ID"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_OPENAI=${SUB2TEST_UNAUTHORIZED_GROUP_OPENAI:-}    # OpenAI token_expired 不测活分组 ID"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC=${SUB2TEST_UNAUTHORIZED_GROUP_ANTHROPIC:-}    # Anthropic token_expired 不测活分组 ID"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_GEMINI=${SUB2TEST_UNAUTHORIZED_GROUP_GEMINI:-}    # Gemini token_expired 不测活分组 ID"
+  echo "SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY=${SUB2TEST_UNAUTHORIZED_GROUP_ANTIGRAVITY:-}    # Antigravity token_expired 不测活分组 ID"
   echo "SUB2TEST_ERROR_STREAK_THRESHOLD=${SUB2TEST_ERROR_STREAK_THRESHOLD:-3}    # 连续 error 停用阈值"
   echo "SUB2TEST_STATE_FILE=${SUB2TEST_STATE_FILE:-/opt/sub2test/state.json}    # 本地状态文件路径"
   echo "SUB2TEST_LOCK_WAIT_SECONDS=${SUB2TEST_LOCK_WAIT_SECONDS:-3600}    # 等待锁最多秒数，0 表示不等待"
