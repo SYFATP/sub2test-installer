@@ -11,7 +11,7 @@ Current release: `0.1.8`
 
 `sub2test-installer.sh` 当前发布版本为 `0.1.8`。
 
-`sub2test-installer.sh` 用来给 Sub2API 部署一套独立的 `sub2test` 运行环境：自动发现数据库配置、调用管理端账号测活接口、把连续 `error` 的账号在达到阈值后自动设为 `disabled`，并可通过 systemd timer 定时执行。
+`sub2test-installer.sh` 用来给 Sub2API 部署一套独立的 `sub2test` 运行环境：自动发现数据库配置、调用管理端生效账号测试接口、把连续 `error` 的账号在达到阈值后自动设为 `disabled`，并可通过 systemd timer 定时执行。
 
 ### 本版更新
 
@@ -46,7 +46,7 @@ sudo sub2test menu
 ### 功能概览
 
 - 自动发现数据库配置
-- 账号测活与连续 error 自动停用
+- 生效账号测试与连续 error 自动停用
 - 未测 / 重复账号 / 代理分配三类独立任务
 - 支持 systemd timer 定时执行
 - 支持手动执行与日志查看
@@ -69,7 +69,7 @@ sudo sub2test run-proxy-assign-now
 
 Current `sub2test-installer.sh` release: `0.1.8`.
 
-`sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
+`sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin active-account test API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
 
 ### Release notes
 
@@ -104,7 +104,7 @@ sudo sub2test menu
 ### Features
 
 - Auto-detect database settings
-- Account health checks and automatic disable on consecutive errors
+- Active-account tests and automatic disable on consecutive errors
 - Separate untested / duplicate / proxy-assignment tasks
 - Systemd timer scheduling
 - Manual execution and log viewing
@@ -195,7 +195,7 @@ Notes:
 
 Current `sub2test-installer.sh` release: `0.1.8`.
 
-`sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin account health-check API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
+`sub2test-installer.sh` installs an independent `sub2test` runtime for Sub2API. It can auto-discover database settings, call the admin active-account test API, disable accounts after a configurable consecutive `error` threshold, and run on a schedule via systemd timer.
 
 ### Release notes
 
@@ -230,7 +230,7 @@ sudo sub2test menu
 ### Features
 
 - Auto-detect database settings
-- Account health checks and automatic disable on consecutive errors
+- Active-account tests and automatic disable on consecutive errors
 - Separate untested / duplicate / proxy-assignment tasks
 - Systemd timer scheduling
 - Manual execution and log viewing

@@ -831,7 +831,7 @@ build_account_where_clause() {
       printf "%s" "(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()) AND ${unauthorized_exclusion})"
       ;;
     *)
-      printf "%s" "((status = 'error' OR (status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()))) AND ${unauthorized_exclusion})"
+      printf "%s" "(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()) AND ${unauthorized_exclusion})"
       ;;
   esac
 }
@@ -842,7 +842,7 @@ build_account_order_clause() {
       printf "%s" "priority ASC, id ASC"
       ;;
     *)
-      printf "%s" "CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC"
+      printf "%s" "priority ASC, id ASC"
       ;;
   esac
 }
@@ -1419,21 +1419,8 @@ elif mode == 'untested':
     where_clause = f"(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()) AND {exclusion_clause})"
     order_clause = "priority ASC, id ASC"
 else:
-    where_clause = f"""
-    (
-      (
-        status = 'error'
-        OR (
-          status = 'active'
-          AND schedulable = TRUE
-          AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW())
-          AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW())
-        )
-      )
-      AND {exclusion_clause}
-    )
-    """
-    order_clause = "CASE WHEN status = 'error' THEN 0 ELSE 1 END, priority ASC, id ASC"
+    where_clause = f"(status = 'active' AND schedulable = TRUE AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at <= NOW()) AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until <= NOW()) AND {exclusion_clause})"
+    order_clause = "priority ASC, id ASC"
 
 conn = psycopg2.connect(
     host=os.environ['SUB2TEST_DB_HOST'],
@@ -2154,9 +2141,9 @@ t() {
   case "$lang:$key" in
     en:menu_title) echo "sub2test menu" ;;
     en:current_tasks) echo "Current automatic tasks:" ;;
-    en:full_task) echo "Full run" ;;
+    en:full_task) echo "Active-account test" ;;
     en:untested_task) echo "Untested run" ;;
-    en:full_scope) echo " (checks error accounts first, then schedulable active accounts)" ;;
+    en:full_scope) echo " (checks schedulable active accounts only)" ;;
     en:untested_scope) echo " (checks only active accounts not yet seen in state.json)" ;;
     en:not_enabled) echo "Disabled" ;;
     en:enabled_every_30_no_delay) echo "Enabled: runs every 30 minutes%s, with no random delay" ;;
@@ -2235,8 +2222,8 @@ t() {
     en:manual_conflict_stopping) echo "Stopping automatic task(s)..." ;;
     en:manual_conflict_stopped) echo "Automatic task(s) stopped. Starting manual run." ;;
     en:manual_conflict_stop_failed) echo "Automatic task(s) are still stopping or waiting. Please try again." ;;
-    en:menu_enable_full) echo "Enable full automatic task" ;;
-    en:menu_disable_full) echo "Disable full automatic task" ;;
+    en:menu_enable_full) echo "Enable active-account automatic test" ;;
+    en:menu_disable_full) echo "Disable active-account automatic test" ;;
     en:menu_edit) echo "Edit global config" ;;
     en:menu_enable_duplicates) echo "Enable duplicate-account check" ;;
     en:menu_disable_duplicates) echo "Disable duplicate-account check" ;;
@@ -2254,38 +2241,38 @@ t() {
     en:label_duplicates_delay) echo "Duplicate-account random delay seconds" ;;
     en:label_duplicates_skip_inactive) echo "Skip inactive accounts when checking duplicates" ;;
     en:last_duplicates_log_title) echo "Last duplicate-account log:" ;;
-    en:menu_full_task) echo "Full task menu" ;;
+    en:menu_full_task) echo "Active-account test menu" ;;
     en:menu_duplicates_task) echo "Duplicate-account task menu" ;;
     en:menu_untested_task) echo "Untested task menu" ;;
     en:menu_manual_run) echo "Manual run menu" ;;
     en:menu_back) echo "Back (0)" ;;
-    en:full_menu_title) echo "Full task menu" ;;
+    en:full_menu_title) echo "Active-account test menu" ;;
     en:untested_menu_title) echo "Untested task menu" ;;
     en:manual_menu_title) echo "Manual run menu" ;;
-    en:full_menu_config) echo "Edit full task config" ;;
-    en:full_menu_enable) echo "Enable full automatic task" ;;
-    en:full_menu_disable) echo "Disable full automatic task" ;;
-    en:full_menu_run_all) echo "Run once (active + error accounts)" ;;
+    en:full_menu_config) echo "Edit active-account test config" ;;
+    en:full_menu_enable) echo "Enable active-account automatic test" ;;
+    en:full_menu_disable) echo "Disable active-account automatic test" ;;
+    en:full_menu_run_all) echo "Run once (active accounts only)" ;;
     en:full_menu_run_error) echo "Run once (error accounts only)" ;;
     en:full_menu_run_disabled) echo "Run once (disabled accounts only)" ;;
-    en:full_menu_show_log) echo "Show last full-task log" ;;
+    en:full_menu_show_log) echo "Show last active-account test log" ;;
     en:untested_menu_config) echo "Edit untested task config" ;;
     en:untested_menu_enable) echo "Enable untested automatic task" ;;
     en:untested_menu_disable) echo "Disable untested automatic task" ;;
     en:untested_menu_run) echo "Run once (untested active accounts only)" ;;
     en:untested_menu_show_log) echo "Show last untested-task log" ;;
     en:global_config_title) echo "Current global parameters:" ;;
-    en:full_config_title) echo "Current full task parameters:" ;;
+    en:full_config_title) echo "Current active-account test parameters:" ;;
     en:untested_config_title) echo "Current untested task parameters:" ;;
-    en:menu_run_all) echo "Run once (all)" ;;
+    en:menu_run_all) echo "Run active accounts only" ;;
     en:menu_run_error) echo "Run error accounts only" ;;
     en:menu_run_disabled) echo "Run disabled accounts only" ;;
     en:menu_run_untested) echo "Run untested active accounts only" ;;
     en:menu_show_config) echo "Show current config" ;;
-    en:menu_show_full_log) echo "Show last full-task log" ;;
+    en:menu_show_full_log) echo "Show last active-account test log" ;;
     en:menu_show_untested_log) echo "Show last untested-task log" ;;
     en:menu_switch_language) echo "Switch language" ;;
-    en:last_full_log_title) echo "Last full automatic task log:" ;;
+    en:last_full_log_title) echo "Last active-account test log:" ;;
     en:last_untested_log_title) echo "Last untested automatic task log:" ;;
     en:language_menu_title) echo "Choose interface language:" ;;
     en:language_option_zh) echo "Chinese" ;;
@@ -2312,11 +2299,11 @@ t() {
     en:label_untested_enabled) echo "Enable automatic task for untested accounts" ;;
     en:label_untested_every_minutes) echo "Run untested task every N minutes (5-720)" ;;
     en:label_untested_delay) echo "Untested task random delay seconds" ;;
-    en:label_full_schedule) echo "Full task schedule mode" ;;
-    en:label_full_daily_at) echo "Full task daily run time (HH:MM, leave blank to disable)" ;;
-    en:label_full_every_hours) echo "Full task every N hours (1-23, leave blank to disable)" ;;
-    en:label_full_delay) echo "Full task random delay seconds" ;;
-    en:schedule_mode_title) echo "Choose full task schedule mode:" ;;
+    en:label_full_schedule) echo "Active-account test schedule mode" ;;
+    en:label_full_daily_at) echo "Active-account test daily run time (HH:MM, leave blank to disable)" ;;
+    en:label_full_every_hours) echo "Active-account test every N hours (1-23, leave blank to disable)" ;;
+    en:label_full_delay) echo "Active-account test random delay seconds" ;;
+    en:schedule_mode_title) echo "Choose active-account test schedule mode:" ;;
     en:schedule_mode_hourly) echo "Hourly" ;;
     en:schedule_mode_daily) echo "Daily" ;;
     en:schedule_mode_weekly) echo "Weekly" ;;
@@ -2328,9 +2315,9 @@ t() {
     en:label_sleep_max) echo "Maximum pause between batches in seconds" ;;
     zh:menu_title) echo "sub2test 菜单" ;;
     zh:current_tasks) echo "当前自动任务：" ;;
-    zh:full_task) echo "全量任务" ;;
+    zh:full_task) echo "生效账号测试" ;;
     zh:untested_task) echo "未测任务" ;;
-    zh:full_scope) echo "（优先测 error，再测可调度的 active 账号）" ;;
+    zh:full_scope) echo "（只测可调度的 active 生效账号）" ;;
     zh:untested_scope) echo "（只测 state.json 里还没出现过的 active 账号）" ;;
     zh:not_enabled) echo "未启用" ;;
     zh:enabled_every_30_no_delay) echo "已启用：每 30 分钟自动执行一次%s，不加随机延迟" ;;
@@ -2363,8 +2350,8 @@ t() {
     zh:edit_intro) echo "下面开始逐项编辑；直接回车表示保持当前值。" ;;
     zh:config_after) echo "修改后的自动任务说明：" ;;
     zh:invalid_option) echo "无效选项" ;;
-    zh:manual_conflict_full_running) echo "全量自动任务正在执行。" ;;
-    zh:manual_conflict_full_waiting) echo "全量自动任务正在排队等待它的锁。" ;;
+    zh:manual_conflict_full_running) echo "生效账号自动测试正在执行。" ;;
+    zh:manual_conflict_full_waiting) echo "生效账号自动测试正在排队等待它的锁。" ;;
     zh:manual_conflict_untested_running) echo "未测自动任务正在执行。" ;;
     zh:manual_conflict_untested_waiting) echo "未测自动任务正在排队等待它的锁。" ;;
     zh:manual_conflict_duplicates_running) echo "重复账号排查自动任务正在执行。" ;;
@@ -2430,38 +2417,38 @@ t() {
     zh:label_duplicates_delay) echo "重复账号任务随机延迟秒数" ;;
     zh:label_duplicates_skip_inactive) echo "排查重复时是否跳过停用账号" ;;
     zh:last_duplicates_log_title) echo "上次重复账号排查日志：" ;;
-    zh:menu_full_task) echo "全量任务菜单" ;;
+    zh:menu_full_task) echo "生效账号测试菜单" ;;
     zh:menu_duplicates_task) echo "重复账号任务菜单" ;;
     zh:menu_untested_task) echo "未测任务菜单" ;;
     zh:menu_manual_run) echo "手动执行菜单" ;;
     zh:menu_back) echo "返回上一级（0）" ;;
-    zh:full_menu_title) echo "全量任务菜单" ;;
+    zh:full_menu_title) echo "生效账号测试菜单" ;;
     zh:untested_menu_title) echo "未测任务菜单" ;;
     zh:manual_menu_title) echo "手动执行菜单" ;;
-    zh:full_menu_config) echo "编辑全量任务配置" ;;
-    zh:full_menu_enable) echo "启用全量自动任务" ;;
-    zh:full_menu_disable) echo "禁用全量自动任务" ;;
-    zh:full_menu_run_all) echo "立即执行一次（生效 + error 账号）" ;;
+    zh:full_menu_config) echo "编辑生效账号测试配置" ;;
+    zh:full_menu_enable) echo "启用生效账号自动测试" ;;
+    zh:full_menu_disable) echo "禁用生效账号自动测试" ;;
+    zh:full_menu_run_all) echo "立即执行一次（仅生效账号）" ;;
     zh:full_menu_run_error) echo "立即执行一次（仅 error 账号）" ;;
     zh:full_menu_run_disabled) echo "立即执行一次（仅 disabled 账号）" ;;
-    zh:full_menu_show_log) echo "查看上次全量自动任务日志" ;;
+    zh:full_menu_show_log) echo "查看上次生效账号测试日志" ;;
     zh:untested_menu_config) echo "编辑未测任务配置" ;;
     zh:untested_menu_enable) echo "启用未测自动任务" ;;
     zh:untested_menu_disable) echo "禁用未测自动任务" ;;
     zh:untested_menu_run) echo "立即执行一次（仅未测 active 账号）" ;;
     zh:untested_menu_show_log) echo "查看上次未测自动任务日志" ;;
     zh:global_config_title) echo "当前全局参数：" ;;
-    zh:full_config_title) echo "当前全量任务参数：" ;;
+    zh:full_config_title) echo "当前生效账号测试参数：" ;;
     zh:untested_config_title) echo "当前未测任务参数：" ;;
-    zh:menu_run_all) echo "立即执行一次（生效 + error）" ;;
+    zh:menu_run_all) echo "立即执行一次（仅生效账号）" ;;
     zh:menu_run_error) echo "仅测试 error 账号" ;;
     zh:menu_run_disabled) echo "仅测试 disabled 账号" ;;
     zh:menu_run_untested) echo "仅测试未测试 active 账号" ;;
     zh:menu_show_config) echo "查看当前配置" ;;
-    zh:menu_show_full_log) echo "查看上次全量自动任务日志" ;;
+    zh:menu_show_full_log) echo "查看上次生效账号测试日志" ;;
     zh:menu_show_untested_log) echo "查看上次未测自动任务日志" ;;
     zh:menu_switch_language) echo "切换语言" ;;
-    zh:last_full_log_title) echo "上次全量自动任务日志：" ;;
+    zh:last_full_log_title) echo "上次生效账号测试日志：" ;;
     zh:last_untested_log_title) echo "上次未测自动任务日志：" ;;
     zh:language_menu_title) echo "选择界面语言：" ;;
     zh:language_option_zh) echo "中文" ;;
@@ -2488,11 +2475,11 @@ t() {
     zh:label_untested_enabled) echo "是否启用未测账号自动任务" ;;
     zh:label_untested_every_minutes) echo "未测任务每隔多少分钟执行一次（5-720）" ;;
     zh:label_untested_delay) echo "未测任务随机延迟秒数" ;;
-    zh:label_full_schedule) echo "全量任务调度模式" ;;
-    zh:label_full_daily_at) echo "全量任务每天几点执行（HH:MM，留空表示不用这个）" ;;
-    zh:label_full_every_hours) echo "全量任务每隔几小时执行一次（1-23，留空表示不用这个）" ;;
-    zh:label_full_delay) echo "全量任务随机延迟秒数" ;;
-    zh:schedule_mode_title) echo "请选择全量任务调度模式：" ;;
+    zh:label_full_schedule) echo "生效账号测试调度模式" ;;
+    zh:label_full_daily_at) echo "生效账号测试每天几点执行（HH:MM，留空表示不用这个）" ;;
+    zh:label_full_every_hours) echo "生效账号测试每隔几小时执行一次（1-23，留空表示不用这个）" ;;
+    zh:label_full_delay) echo "生效账号测试随机延迟秒数" ;;
+    zh:schedule_mode_title) echo "请选择生效账号测试调度模式：" ;;
     zh:schedule_mode_hourly) echo "每小时一次" ;;
     zh:schedule_mode_daily) echo "每天一次" ;;
     zh:schedule_mode_weekly) echo "每周一次" ;;
@@ -2540,7 +2527,7 @@ show_config() {
   echo "SUB2TEST_UNTESTED_ENABLED=${SUB2TEST_UNTESTED_ENABLED:-false}    # 是否启用未测试 active 账号独立定时任务"
   echo "SUB2TEST_UNTESTED_EVERY_MINUTES=${SUB2TEST_UNTESTED_EVERY_MINUTES:-30}    # 未测试 active 账号每隔多少分钟执行一次"
   echo "SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS=${SUB2TEST_UNTESTED_RANDOMIZED_DELAY_SECONDS:-120}    # 未测试 active 账号 systemd 随机延迟秒数"
-  echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用全量自动任务"
+  echo "SUB2TEST_ENABLED=${SUB2TEST_ENABLED:-false}    # 是否启用生效账号自动测试"
   echo "SUB2TEST_SCHEDULE=${SUB2TEST_SCHEDULE:-daily}    # 兼容旧定时频率"
   echo "SUB2TEST_DAILY_AT=${SUB2TEST_DAILY_AT:-}    # 每天执行时间，格式 HH:MM"
   echo "SUB2TEST_EVERY_HOURS=${SUB2TEST_EVERY_HOURS:-}    # 每隔几小时执行一次"
