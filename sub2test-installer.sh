@@ -1822,7 +1822,11 @@ def classify_error_text(http_status: int | None, text: str) -> str:
         return 'rate_limited'
     if 'token_expired' in raw or 'token expired' in raw:
         return 'token_expired'
-    if 'token_invalidated' in raw:
+    if any(keyword in raw for keyword in (
+        'token_invalidated',
+        'agent runtime has been deleted',
+        'failed to build agent identity authentication',
+    )):
         return 'error'
     if http_status in (401, 403) or any(keyword in raw for keyword in ('401', '403', 'unauthorized', 'forbidden', 'invalid token', 'token invalid', 'login again', 'sign in again', 'authentication token', 'no access token available')):
         return 'error'
