@@ -1346,13 +1346,22 @@ run_group_status_soft_delete() {
 
   if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
     rows_tsv="$(mktemp)"
-    docker exec \
+    docker exec -i \
       -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
       "$SUB2TEST_DB_CONTAINER" \
       psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" \
         -v "group_identifier=$group_identifier" \
         -v "account_status=$account_status" \
-        -F $'\t' -Atqc "SELECT DISTINCT a.id, COALESCE(a.name, ''), a.status, g.id, COALESCE(g.name, '') FROM accounts a JOIN account_groups ag ON ag.account_id = a.id JOIN groups g ON g.id = ag.group_id WHERE a.deleted_at IS NULL AND a.status = :'account_status' AND (g.id::text = :'group_identifier' OR g.name = :'group_identifier') ORDER BY a.id ASC" > "$rows_tsv"
+        -F $'\t' -Atq > "$rows_tsv" <<'SQL_GROUP_STATUS_DELETE'
+SELECT DISTINCT a.id, COALESCE(a.name, ''), a.status, g.id, COALESCE(g.name, '')
+FROM accounts a
+JOIN account_groups ag ON ag.account_id = a.id
+JOIN groups g ON g.id = ag.group_id
+WHERE a.deleted_at IS NULL
+  AND a.status = :'account_status'
+  AND (g.id::text = :'group_identifier' OR g.name = :'group_identifier')
+ORDER BY a.id ASC;
+SQL_GROUP_STATUS_DELETE
     python3 - "$rows_tsv" "$rows_json" <<'PY_EXPORT_CONTAINER_GROUP_STATUS_DELETE'
 import json
 import sys
