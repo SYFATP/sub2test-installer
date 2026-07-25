@@ -1326,6 +1326,156 @@ print(f'duplicate_summary groups={len(duplicate_groups)} deleted={deleted_count}
 PY_RUN_DUPLICATE_CHECK
 }
 
+run_group_status_soft_delete() {
+  local group_identifier="$1"
+  local account_status="$2"
+  local rows_json=""
+  local rows_tsv=""
+
+  group_identifier="$(printf '%s' "$group_identifier" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  account_status="$(printf '%s' "$account_status" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [ -n "$group_identifier" ] || { echo "Group name or ID is required." >&2; return 1; }
+  [ -n "$account_status" ] || { echo "Account status is required." >&2; return 1; }
+
+  preflight_runtime
+  rows_json="$(mktemp)"
+  cleanup_run_group_status_soft_delete() {
+    rm -f -- "${rows_json:-}" "${rows_tsv:-}"
+  }
+  trap cleanup_run_group_status_soft_delete RETURN
+
+  if [ -n "${SUB2TEST_DB_CONTAINER:-}" ]; then
+    rows_tsv="$(mktemp)"
+    docker exec \
+      -e PGPASSWORD="$SUB2TEST_DB_PASSWORD" \
+      "$SUB2TEST_DB_CONTAINER" \
+      psql -U "$SUB2TEST_DB_USER" -d "$SUB2TEST_DB_NAME" \
+        -v "group_identifier=$group_identifier" \
+        -v "account_status=$account_status" \
+        -F $'\t' -Atqc "SELECT DISTINCT a.id, COALESCE(a.name, ''), a.status, g.id, COALESCE(g.name, '') FROM accounts a JOIN account_groups ag ON ag.account_id = a.id JOIN groups g ON g.id = ag.group_id WHERE a.deleted_at IS NULL AND a.status = :'account_status' AND (g.id::text = :'group_identifier' OR g.name = :'group_identifier') ORDER BY a.id ASC" > "$rows_tsv"
+    python3 - "$rows_tsv" "$rows_json" <<'PY_EXPORT_CONTAINER_GROUP_STATUS_DELETE'
+import json
+import sys
+
+input_path = sys.argv[1]
+output_path = sys.argv[2]
+
+with open(input_path, 'r', encoding='utf-8') as src, open(output_path, 'w', encoding='utf-8') as out:
+    for raw_line in src:
+        parts = raw_line.rstrip('\n').split('\t', 4)
+        if len(parts) != 5:
+            continue
+        account_id, account_name, status, group_id, group_name = parts
+        out.write(json.dumps({
+            'id': int(account_id),
+            'name': account_name,
+            'status': status,
+            'group_id': int(group_id),
+            'group_name': group_name,
+        }, ensure_ascii=False) + '\n')
+PY_EXPORT_CONTAINER_GROUP_STATUS_DELETE
+  else
+    python3 - "$rows_json" "$group_identifier" "$account_status" <<'PY_EXPORT_GROUP_STATUS_DELETE'
+import json
+import os
+import sys
+
+import psycopg2
+
+output_path, group_identifier, account_status = sys.argv[1:]
+conn = psycopg2.connect(
+    host=os.environ['SUB2TEST_DB_HOST'],
+    port=os.environ['SUB2TEST_DB_PORT'],
+    user=os.environ['SUB2TEST_DB_USER'],
+    password=os.getenv('SUB2TEST_DB_PASSWORD', ''),
+    dbname=os.environ['SUB2TEST_DB_NAME'],
+    sslmode=os.getenv('SUB2TEST_DB_SSLMODE', 'disable'),
+)
+cur = conn.cursor()
+cur.execute(
+    """
+    SELECT DISTINCT a.id, COALESCE(a.name, ''), a.status, g.id, COALESCE(g.name, '')
+    FROM accounts a
+    JOIN account_groups ag ON ag.account_id = a.id
+    JOIN groups g ON g.id = ag.group_id
+    WHERE a.deleted_at IS NULL
+      AND a.status = %s
+      AND (g.id::text = %s OR g.name = %s)
+    ORDER BY a.id ASC
+    """,
+    (account_status, group_identifier, group_identifier),
+)
+rows = cur.fetchall()
+cur.close()
+conn.close()
+
+with open(output_path, 'w', encoding='utf-8') as fh:
+    for account_id, account_name, status, group_id, group_name in rows:
+        fh.write(json.dumps({
+            'id': account_id,
+            'name': account_name or '',
+            'status': status,
+            'group_id': group_id,
+            'group_name': group_name or '',
+        }, ensure_ascii=False) + '\n')
+PY_EXPORT_GROUP_STATUS_DELETE
+  fi
+
+  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_TIMEOUT_SECONDS
+  python3 - "$rows_json" "$group_identifier" "$account_status" <<'PY_RUN_GROUP_STATUS_SOFT_DELETE'
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+rows_path, group_identifier, account_status = sys.argv[1:]
+api_base_url = (os.getenv('SUB2TEST_API_BASE_URL', '') or '').strip().rstrip('/')
+admin_api_key = (os.getenv('SUB2TEST_ADMIN_API_KEY', '') or '').strip()
+timeout_seconds = int((os.getenv('SUB2TEST_TIMEOUT_SECONDS', '30') or '30').strip())
+
+with open(rows_path, 'r', encoding='utf-8') as fh:
+    rows = [json.loads(line) for line in fh if line.strip()]
+
+headers = {
+    'x-api-key': admin_api_key,
+    'Accept': 'application/json',
+}
+
+def compact(value):
+    return ' '.join(str(value or '').replace('\n', ' ').replace('\r', ' ').split())[:180]
+
+def delete_account(account_id):
+    request = urllib.request.Request(
+        f'{api_base_url}/admin/accounts/{account_id}',
+        headers=headers,
+        method='DELETE',
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return True, getattr(response, 'status', None) or response.getcode(), ''
+    except urllib.error.HTTPError as err:
+        return False, err.code, compact(err.read().decode('utf-8', errors='replace'))
+    except Exception as err:
+        return False, None, compact(err)
+
+deleted = 0
+failed = 0
+for row in rows:
+    account_id = int(row['id'])
+    success, status_code, detail = delete_account(account_id)
+    if success:
+        deleted += 1
+        print(f'group_status_soft_delete id={account_id} group_id={row["group_id"]} group_name={row["group_name"]} account_status={row["status"]} status=success')
+    else:
+        failed += 1
+        print(f'group_status_soft_delete id={account_id} group_id={row["group_id"]} group_name={row["group_name"]} account_status={row["status"]} status=failed http_status={status_code or "unknown"} detail={detail}')
+
+print(f'group_status_soft_delete_summary group={group_identifier} account_status={account_status} candidates={len(rows)} deleted={deleted} failed={failed}')
+sys.exit(1 if failed else 0)
+PY_RUN_GROUP_STATUS_SOFT_DELETE
+}
+
 run_health_check() {
   preflight_runtime
   local mode="${1:-all}"
@@ -2249,6 +2399,11 @@ t() {
     en:menu_duplicates_task) echo "Duplicate-account task menu" ;;
     en:menu_untested_task) echo "Untested task menu" ;;
     en:menu_manual_run) echo "Manual run menu" ;;
+    en:manual_menu_soft_delete_group_status) echo "Soft-delete accounts by group and status" ;;
+    en:soft_delete_group_prompt) echo "Group name or ID" ;;
+    en:soft_delete_status_prompt) echo "Account status (for example: error)" ;;
+    en:soft_delete_confirm) echo "Soft-delete the matching accounts? [y/N]" ;;
+    en:soft_delete_cancelled) echo "Soft delete cancelled." ;;
     en:menu_back) echo "Back (0)" ;;
     en:full_menu_title) echo "Active-account test menu" ;;
     en:untested_menu_title) echo "Untested task menu" ;;
@@ -2425,6 +2580,11 @@ t() {
     zh:menu_duplicates_task) echo "重复账号任务菜单" ;;
     zh:menu_untested_task) echo "未测任务菜单" ;;
     zh:menu_manual_run) echo "手动执行菜单" ;;
+    zh:manual_menu_soft_delete_group_status) echo "按分组和状态软删除账号" ;;
+    zh:soft_delete_group_prompt) echo "分组名称或 ID" ;;
+    zh:soft_delete_status_prompt) echo "账号状态（例如：error）" ;;
+    zh:soft_delete_confirm) echo "确认软删除所有匹配账号？[y/N]" ;;
+    zh:soft_delete_cancelled) echo "已取消软删除。" ;;
     zh:menu_back) echo "返回上一级（0）" ;;
     zh:full_menu_title) echo "生效账号测试菜单" ;;
     zh:untested_menu_title) echo "未测任务菜单" ;;
@@ -3410,6 +3570,49 @@ run_manual_once() {
   run_manual_once_with_lock "$mode"
 }
 
+run_group_status_soft_delete_now() {
+  . "$SUB2TEST_CONFIG_FILE"
+  export SUB2TEST_DEPLOY_MODE SUB2TEST_COMPOSE_FILE SUB2API_CONFIG_FILE
+  export SUB2TEST_DB_HOST SUB2TEST_DB_PORT SUB2TEST_DB_USER SUB2TEST_DB_PASSWORD SUB2TEST_DB_NAME SUB2TEST_DB_SSLMODE SUB2TEST_DB_CONTAINER
+  export SUB2TEST_API_BASE_URL SUB2TEST_ADMIN_API_KEY SUB2TEST_TIMEOUT_SECONDS
+  run_group_status_soft_delete "$1" "$2"
+}
+
+run_group_status_soft_delete_with_lock() {
+  local group_identifier="$1"
+  local account_status="$2"
+  echo "$(t manual_lock_starting)"
+  if ! /usr/bin/flock -w "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" /opt/sub2test/run.lock "$SCRIPT_PATH" run-soft-delete-group-status-now "$group_identifier" "$account_status"; then
+    echo "$(t manual_lock_failed)"
+    return 1
+  fi
+}
+
+run_group_status_soft_delete_manual() {
+  local group_identifier="$1"
+  local account_status="$2"
+  if ! automatic_tasks_conflicting; then
+    run_group_status_soft_delete_with_lock "$group_identifier" "$account_status"
+    return 0
+  fi
+
+  echo
+  print_automatic_task_conflicts || true
+  if ! confirm_yes "$(t manual_conflict_prompt)"; then
+    echo "$(t manual_conflict_cancelled)"
+    return 0
+  fi
+
+  echo "$(t manual_conflict_stopping)"
+  if ! stop_automatic_tasks_for_manual_run; then
+    echo "$(t manual_conflict_stop_failed)"
+    return 1
+  fi
+
+  echo "$(t manual_conflict_stopped)"
+  run_group_status_soft_delete_with_lock "$group_identifier" "$account_status"
+}
+
 enable_task() {
   save_config_value SUB2TEST_ENABLED true
   . "$SUB2TEST_CONFIG_FILE"
@@ -3562,6 +3765,33 @@ untested_task_menu() {
   done
 }
 
+manual_soft_delete_group_status() {
+  local group_identifier=""
+  local account_status=""
+
+  fetch_active_groups || return 1
+  echo
+  if ! read -r -p "$(t soft_delete_group_prompt): " group_identifier; then
+    return 0
+  fi
+  if ! read -r -p "$(t soft_delete_status_prompt): " account_status; then
+    return 0
+  fi
+  group_identifier="$(printf '%s' "$group_identifier" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  account_status="$(printf '%s' "$account_status" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [ -z "$group_identifier" ] || [ -z "$account_status" ]; then
+    echo "$(t invalid_option)"
+    return 1
+  fi
+
+  echo "group=$group_identifier account_status=$account_status"
+  if ! confirm_yes "$(t soft_delete_confirm)"; then
+    echo "$(t soft_delete_cancelled)"
+    return 0
+  fi
+  run_group_status_soft_delete_manual "$group_identifier" "$account_status"
+}
+
 manual_run_menu() {
   while true; do
     . "$SUB2TEST_CONFIG_FILE"
@@ -3572,6 +3802,7 @@ manual_run_menu() {
     echo "2) $(t menu_run_error)"
     echo "3) $(t menu_run_disabled)"
     echo "4) $(t menu_run_untested)"
+    echo "5) $(t manual_menu_soft_delete_group_status)"
     echo "0) $(t menu_back)"
     read -r -p "> " choice
     case "$choice" in
@@ -3579,6 +3810,7 @@ manual_run_menu() {
       2) run_manual_once error ;;
       3) run_manual_once disabled ;;
       4) run_manual_once untested ;;
+      5) manual_soft_delete_group_status ;;
       0) return 0 ;;
       *) echo "$(t invalid_option)" ;;
     esac
@@ -3945,6 +4177,14 @@ case "${1:-menu}" in
   run-duplicates) run_duplicates_once ;;
   run-proxy-assign) run_proxy_assign_now ;;
   run-proxy-assign-now) run_proxy_assign_now ;;
+  run-soft-delete-group-status-now) run_group_status_soft_delete_now "${2:-}" "${3:-}" ;;
+  soft-delete-group-status)
+    if [ "${4:-}" != "--yes" ]; then
+      echo "Usage: sub2test soft-delete-group-status <group-name-or-id> <account-status> --yes" >&2
+      exit 1
+    fi
+    run_group_status_soft_delete_now "${2:-}" "${3:-}"
+    ;;
   show-config) show_config ;;
   preflight) preflight_runtime ;;
   enable) enable_task ;;
@@ -3956,7 +4196,7 @@ case "${1:-menu}" in
   enable-proxy-assign) enable_proxy_assign_task ;;
   disable-proxy-assign) disable_proxy_assign_task ;;
   menu) menu ;;
-  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|run-duplicates|run-proxy-assign|show-config|preflight|enable|disable|enable-untested|disable-untested|enable-duplicates|disable-duplicates|enable-proxy-assign|disable-proxy-assign]" >&2; exit 1 ;;
+  *) echo "Usage: sub2test [menu|run-once [all|error|disabled|untested]|run-duplicates|run-proxy-assign|soft-delete-group-status <group-name-or-id> <account-status> --yes|show-config|preflight|enable|disable|enable-untested|disable-untested|enable-duplicates|disable-duplicates|enable-proxy-assign|disable-proxy-assign]" >&2; exit 1 ;;
 esac
 '''
 content = content.replace('__CONFIG_FILE__', config_file)

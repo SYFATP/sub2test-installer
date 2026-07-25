@@ -38,6 +38,7 @@ sudo sub2test show-config
 sudo sub2test show-config
 sudo sub2test run-once
 sudo sub2test run-proxy-assign-now
+sudo sub2test soft-delete-group-status "自用" error --yes
 sudo sub2test enable
 sudo sub2test disable
 sudo sub2test menu
@@ -106,6 +107,7 @@ sudo sub2test menu
 - Auto-detect database settings
 - Active-account tests and automatic disable on consecutive errors
 - Separate untested / duplicate / proxy-assignment tasks
+- Manual soft deletion of accounts filtered by group name/ID and account status
 - Systemd timer scheduling
 - Manual execution and log viewing
 
