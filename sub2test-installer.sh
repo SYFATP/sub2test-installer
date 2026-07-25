@@ -3591,35 +3591,14 @@ run_group_status_soft_delete_with_lock() {
   local group_identifier="$1"
   local account_status="$2"
   echo "$(t manual_lock_starting)"
-  if ! /usr/bin/flock -w "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" /opt/sub2test/run.lock "$SCRIPT_PATH" run-soft-delete-group-status-now "$group_identifier" "$account_status"; then
+  if ! /usr/bin/flock -w "${SUB2TEST_LOCK_WAIT_SECONDS:-3600}" /opt/sub2test/soft-delete.lock "$SCRIPT_PATH" run-soft-delete-group-status-now "$group_identifier" "$account_status"; then
     echo "$(t manual_lock_failed)"
     return 1
   fi
 }
 
 run_group_status_soft_delete_manual() {
-  local group_identifier="$1"
-  local account_status="$2"
-  if ! automatic_tasks_conflicting; then
-    run_group_status_soft_delete_with_lock "$group_identifier" "$account_status"
-    return 0
-  fi
-
-  echo
-  print_automatic_task_conflicts || true
-  if ! confirm_yes "$(t manual_conflict_prompt)"; then
-    echo "$(t manual_conflict_cancelled)"
-    return 0
-  fi
-
-  echo "$(t manual_conflict_stopping)"
-  if ! stop_automatic_tasks_for_manual_run; then
-    echo "$(t manual_conflict_stop_failed)"
-    return 1
-  fi
-
-  echo "$(t manual_conflict_stopped)"
-  run_group_status_soft_delete_with_lock "$group_identifier" "$account_status"
+  run_group_status_soft_delete_with_lock "$1" "$2"
 }
 
 enable_task() {
@@ -4192,7 +4171,7 @@ case "${1:-menu}" in
       echo "Usage: sub2test soft-delete-group-status <group-name-or-id> <account-status> --yes" >&2
       exit 1
     fi
-    run_group_status_soft_delete_now "${2:-}" "${3:-}"
+    run_group_status_soft_delete_with_lock "${2:-}" "${3:-}"
     ;;
   show-config) show_config ;;
   preflight) preflight_runtime ;;
